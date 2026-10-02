@@ -45,6 +45,7 @@ export const inject = [
   'slots',
   'layout',
   'uiWorkspace',
+  'remote',
   'remote.agentPresets',
   'sessions',
 ]
