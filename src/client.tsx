@@ -136,7 +136,7 @@ function registerMainPanel(
   return remove
 }
 
-function installStyles(): void
+function installStyles(): void {
   const id = 'dsh-teacher-marketplace'
   if (document.querySelector(`style[data-plugin="${id}"]`)) return
   const tag = document.createElement('style')
