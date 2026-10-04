@@ -1,10 +1,18 @@
 # 教师智能体市场：页面插件 + 两个教育类 Agent Preset。
 #
-# 基础能力由宿主环境提供：
+# 注意：
+# - Agent Preset 在 Harness 0.2.x 中会在启动阶段 eager mount 定义。
+# - 不要把 dsh-wrong-question / dshmath-manim 这类宿主级插件再次挂进每个
+#   Preset，否则会重复创建数据库/HTTP/工具实例，并可能触发原生运行时崩溃。
+# - 这些基础能力由 web profile 宿主层统一加载；教师 Preset 只负责教师身份与教学提示。
+#
+# 基础能力：
 #   dsh-wrong-question
 #   dshmath-manim
 #
-# 本 bundle 不复制两套能力，而是把它们组合进教师 Preset。
+# 教师 Preset：
+#   ai-math-teacher
+#   ai-physics-teacher
 
 - insert:
     - id: dsh-teacher-marketplace
@@ -46,15 +54,6 @@
                 【沟通】
                 全程使用学生能理解的中文，不暴露内部工具、Skill、数据库或实现细节。
 
-          - id: wrong-question
-            name: "dsh-wrong-question"
-          - id: dshmath-manim
-            name: "dshmath-manim"
-          - id: skill-filesystem
-            name: "@deepseek-ai/dsh-skill-filesystem"
-          - id: tool-skill
-            name: "@deepseek-ai/dsh-tool-skill"
-
     - id: preset-ai-physics-teacher
       name: "@deepseek-ai/dsh-agent-preset"
       config:
@@ -90,12 +89,3 @@
 
                 【沟通】
                 全程使用学生能理解的中文，不暴露内部工具、Skill、数据库或实现细节。
-
-          - id: wrong-question
-            name: "dsh-wrong-question"
-          - id: dshmath-manim
-            name: "dshmath-manim"
-          - id: skill-filesystem
-            name: "@deepseek-ai/dsh-skill-filesystem"
-          - id: tool-skill
-            name: "@deepseek-ai/dsh-tool-skill"
