@@ -2,6 +2,10 @@
 
 面向普通学生的 DeepSeek Harness 教师智能体产品层。
 
+## 当前运行基线
+
+本仓库按 **DeepSeek Harness 0.2.0-rc.2** 开发。
+
 ## 产品定位
 
 用户不需要理解 Agent、Skill、插件或 Manim。进入「智能体」后直接看到教师卡片：
@@ -11,29 +15,23 @@
 
 每位老师都可以「开始学习」；用户还可以把老师加入「我的智能体」。
 
-## 页面结构
+## Preset 设计
 
-- 智能体广场
-- 我的智能体
-- 教师详情
-- 添加 / 移除
-- 开始学习
-
-「我的智能体」与「智能体广场」属于同一个插件，不创建第二个 Agent 插件。
-
-## Preset
-
-本插件自带两个 Agent Preset 定义：
+本插件提供两个 Agent Preset：
 
 - `ai-math-teacher`
 - `ai-physics-teacher`
 
-它们使用当前项目中的：
+Preset **只负责教师身份与教学行为提示**。不要把 `dsh-wrong-question`、`dshmath-manim` 等宿主级插件重复挂到每个 Preset。
 
-- `dsh-wrong-question`：错题记忆、学习漏洞、举一反三数据
-- `dshmath-manim`：学习动画
+原因是 Harness 0.2.x 的 Agent Preset 定义会 eager mount。重复挂载宿主级插件可能导致数据库、Web 路由和工具被创建多份。
 
-当前版本要求宿主环境已经安装这两个基础插件；若缺少其中一个，Preset 会显示为不可用，而 marketplace 页面仍可打开。
+因此：
+
+- `dsh-wrong-question`：由 web profile 宿主层统一加载
+- `dshmath-manim`：由 web profile 宿主层统一加载
+- 教师 Preset：只提供教师人格与教学策略
+- marketplace：只负责学生看到的教师市场 UI
 
 ## 开始学习
 
@@ -41,10 +39,10 @@
 
 1. 打开新的 DeepSeek Harness Session；
 2. 等待空白 Session 出现；
-3. 调用 Agent Preset 的官方选择接口，把该 Session 切换到对应教师；
+3. 调用 Agent Preset 的选择接口；
 4. 用户直接开始聊天。
 
-已有空白 Session 时会直接复用它，不要求用户自己去 Agent Preset 设置页切换。
+学生不需要自己理解 Agent、Skill 或 Preset。
 
 ## 开发
 
