@@ -479,9 +479,10 @@ function isUrlLike(value: string): boolean {
   return /^(https?:|blob:|data:|file:)/i.test(value)
 }
 
-/** 提取文本里的 markdown 引用 ![alt](<path>)；用于识别贴在回复里生成的视频/图片。 */
+/** 提取文本里的 markdown 引用，兼容图片 ![alt](<path>) 与普通链接 [alt](<path>)，
+ *  用于识别贴在回复里生成的视频/图片/文件。 */
 function markdownRefsFrom(text: string): Array<{ alt: string; url: string }> {
-  return Array.from(text.matchAll(/!\[([^\]]*)\]\(<([^<>\s]+)>\)/g)).map(m => ({
+  return Array.from(text.matchAll(/!?\[([^\]]*?)\]\(<([^<>\s]+)>\)/g)).map(m => ({
     alt: m[1] ?? '',
     url: m[2]?.trim() ?? '',
   }))
@@ -588,8 +589,10 @@ function collectFromEvent(event: unknown, out: Artifact[]): void {
       collectContentBlocks([rec], out)
     }
 
-    // 产物对象常见的直接引用字段。
-    const artifactish = ['data', 'artifact', 'artifacts', 'attachment', 'attachments', 'output', 'outputs', 'result', 'content', 'message', 'meta', 'file', 'files']
+    // 产物对象常见的直接引用字段。arguments 一定要纳入：tool/call 的
+    // data.arguments 是 JSON 字符串 {"path": "...mp4", "html": "..."}，
+    // 必须解出来才能拿到 dshmath-manim / dsh_im_return_file 生成的视频。
+    const artifactish = ['data', 'artifact', 'artifacts', 'attachment', 'attachments', 'output', 'outputs', 'result', 'content', 'message', 'meta', 'file', 'files', 'arguments']
     for (const key of artifactish) {
       if (key in rec) visit(rec[key], depth + 1)
     }
