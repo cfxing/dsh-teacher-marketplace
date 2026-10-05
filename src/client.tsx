@@ -54,6 +54,7 @@ export function apply(ctx: Context): void {
   installStyles()
 
   const ui = ctx as any
+  const artifactManager = new ArtifactManager(ctx)
   let dispose: (() => void) | undefined
 
   const open = (initialView: View = 'market'): void => {
@@ -65,6 +66,7 @@ export function apply(ctx: Context): void {
       () => (
         <TeacherMarketplace
           ctx={ctx}
+          artifactManager={artifactManager}
           initialView={initialView}
           close={() => {
             dispose?.()
@@ -98,6 +100,7 @@ export function apply(ctx: Context): void {
     () => () => {
       dispose?.()
       dispose = undefined
+      artifactManager.dispose()
     },
     'dsh-teacher-marketplace: workspace lifecycle',
   )
@@ -188,7 +191,7 @@ async function waitForBlankSession(ctx: any, timeoutMs = 10000): Promise<any> {
   throw new Error('新的学习会话没有及时打开，请再试一次。')
 }
 
-async function selectTeacherSession(ctx: any, presetId: string): Promise<void> {
+async function selectTeacherSession(ctx: any, presetId: string): Promise<any> {
   const remote = ctx.remote?.agentPresets
   if (remote === undefined || typeof remote.select !== 'function') {
     throw new Error('当前 Harness 没有提供 Agent Preset 选择服务。')
@@ -203,10 +206,14 @@ async function selectTeacherSession(ctx: any, presetId: string): Promise<void> {
   }
 
   const current = session.projectionValues?.agentPreset
-  if (current === presetId) return
+  if (current !== presetId) {
+    const result = await remote.select(session.id, presetId)
+    if (!result.ok) throw new Error(result.error?.message ?? '教师智能体切换失败。')
+  }
 
-  const result = await remote.select(session.id, presetId)
-  if (!result.ok) throw new Error(result.error?.message ?? '教师智能体切换失败。')
+  // This is a native DeepSeek Harness Session. The marketplace only observes it;
+  // it does not create or own a second plugin-local session.
+  return session
 }
 
 async function loadAvailablePresets(ctx: any): Promise<Set<string>> {
@@ -251,6 +258,118 @@ type Artifact = {
   html?: string
   /** 附件服务托管的字节引用 id；通过 SessionFace.readAttachment 读取渲染。 */
   attachmentId?: string
+}
+
+type ArtifactManagerSnapshot = {
+  artifacts: Artifact[]
+  session: any | null
+  sessionId: string | null
+}
+
+/**
+ * 学习产物管理器与 UI 生命周期解耦。
+ *
+ * 关键点：TeacherMarketplace 只是一个面板，点击“开始学习”后会被 close()
+ * 卸载；Harness Session 本身不会消失。因此事件订阅不能放在面板组件的
+ * useEffect 里，否则面板一关，后续老师生成的 HTML / 视频就没人监听了。
+ *
+ * ArtifactManager 在 apply() 生命周期内常驻：
+ *   Harness Session -> eventSource -> ArtifactManager -> React 面板
+ */
+class ArtifactManager {
+  private readonly listeners = new Set<() => void>()
+  private ref: any | null = null
+  private unsubscribe: (() => void) | undefined
+  private snapshotValue: ArtifactManagerSnapshot = {
+    artifacts: [],
+    session: null,
+    sessionId: null,
+  }
+
+  constructor(private readonly ctx: any) {}
+
+  subscribe(listener: () => void): () => void {
+    this.listeners.add(listener)
+    return () => this.listeners.delete(listener)
+  }
+
+  snapshot(): ArtifactManagerSnapshot {
+    return this.snapshotValue
+  }
+
+  watchSession(sessionId: string): void {
+    if (this.snapshotValue.sessionId === sessionId && this.ref !== null) return
+
+    this.stopCurrentSession()
+
+    const sessions = this.ctx.sessions
+    if (!sessions || typeof sessions.retain !== 'function') return
+
+    try {
+      const ref = sessions.retain(sessionId, { source: 'controllerOperation' })
+      this.ref = ref
+      this.snapshotValue = {
+        artifacts: [],
+        session: ref.binding?.session ?? null,
+        sessionId,
+      }
+
+      const sync = (): void => {
+        try {
+          const window = ref.binding?.eventSource?.getSnapshot?.()
+          const entries = window?.entries ?? []
+          const artifacts = extractArtifacts(entries)
+          this.snapshotValue = {
+            artifacts,
+            session: ref.binding?.session ?? this.snapshotValue.session,
+            sessionId,
+          }
+          this.emit()
+        } catch {
+          // Event window may not be ready during Session startup; the next event
+          // will trigger another sync.
+        }
+      }
+
+      const source = ref.binding?.eventSource
+      if (source && typeof source.subscribe === 'function') {
+        this.unsubscribe = source.subscribe(sync)
+      }
+      sync()
+    } catch {
+      this.ref = null
+      this.snapshotValue = {
+        artifacts: [],
+        session: null,
+        sessionId: null,
+      }
+    }
+  }
+
+  dispose(): void {
+    this.stopCurrentSession()
+    this.listeners.clear()
+  }
+
+  private stopCurrentSession(): void {
+    this.unsubscribe?.()
+    this.unsubscribe = undefined
+    try {
+      this.ref?.release?.()
+    } catch {
+      // Ignore release failures during plugin shutdown/session switching.
+    }
+    this.ref = null
+    this.snapshotValue = {
+      artifacts: [],
+      session: null,
+      sessionId: null,
+    }
+  }
+
+  private emit(): void {
+    for (const listener of this.listeners) listener()
+  }
 }
 
 function kindOfName(name: string): ArtifactKind {
@@ -405,8 +524,9 @@ function htmlBodyFrom(value: unknown): string | undefined {
   return undefined
 }
 
-function TeacherMarketplace({ ctx, initialView, close }: {
+function TeacherMarketplace({ ctx, artifactManager, initialView, close }: {
   ctx: Context
+  artifactManager: ArtifactManager
   initialView: View
   close: () => void
 }) {
@@ -418,11 +538,18 @@ function TeacherMarketplace({ ctx, initialView, close }: {
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
 
-  // 学习产物：订阅当前保留会话的事件窗口，抽取工具生成的内容。
-  const [activeArtifacts, setActiveArtifacts] = useState<Artifact[]>([])
+  // 学习产物由常驻 ArtifactManager 维护，不随 marketplace 面板卸载而停止。
+  const [, forceArtifactUpdate] = useState(0)
   const [activeTab, setActiveTab] = useState<Artifact | null>(null)
-  // 当前保留会话的 SessionFace，用于 readAttachment 读取附件字节渲染。
-  const [activeSession, setActiveSession] = useState<any>(null)
+  const artifactSnapshot = artifactManager.snapshot()
+  const activeArtifacts = artifactSnapshot.artifacts
+  const activeSession = artifactSnapshot.session
+
+  useEffect(() => {
+    return artifactManager.subscribe(() => {
+      forceArtifactUpdate(value => value + 1)
+    })
+  }, [artifactManager])
 
   useEffect(() => {
     let alive = true
@@ -431,57 +558,6 @@ function TeacherMarketplace({ ctx, initialView, close }: {
     })
     return () => {
       alive = false
-    }
-  }, [ctx])
-
-  useEffect(() => {
-    const sessions: any = (ctx as any).sessions
-    if (!sessions || typeof sessions.retain !== 'function') {
-      setNotice('当前环境未提供会话订阅能力，学习产物暂不可用。')
-      return
-    }
-
-    const list = sessions.list?.getSnapshot?.()
-    const byId = list?.byId ?? {}
-    const live = (Object.values(byId) as any[])
-      .filter((s: any) => s.blank !== true && !s.removed)
-      .sort((a: any, b: any) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))[0]
-    if (live === undefined || typeof live.id !== 'string') return
-
-    const ref = sessions.retain(live.id, { source: 'controllerOperation' })
-    setActiveSession(ref.binding?.session ?? null)
-    let sub: (() => void) | undefined
-    let cancelled = false
-
-    const sync = (): void => {
-      if (cancelled) return
-      try {
-        const window = ref.binding?.eventSource?.getSnapshot?.()
-        const entries = window?.entries ?? []
-        const arts = extractArtifacts(entries)
-        setActiveArtifacts(arts)
-        if (arts.length > 0) {
-          setActiveTab(prev => prev ?? arts[0])
-        }
-      } catch {
-        // 事件窗口未就绪时跳过本轮抽取。
-      }
-    }
-
-    const source = ref.binding?.eventSource
-    if (source && typeof source.subscribe === 'function') {
-      sub = source.subscribe(sync)
-    }
-    sync()
-
-    return () => {
-      cancelled = true
-      sub?.()
-      try {
-        ref.release?.()
-      } catch {
-        // 释放失败不影响插件卸载。
-      }
     }
   }, [ctx])
 
@@ -508,7 +584,8 @@ function TeacherMarketplace({ ctx, initialView, close }: {
     setError('')
     setNotice('')
     try {
-      await selectTeacherSession(ctx, teacher.presetId)
+      const session = await selectTeacherSession(ctx, teacher.presetId)
+      artifactManager.watchSession(session.id)
       close()
     } catch (reason) {
       setError(errorMessage(reason))
@@ -572,7 +649,9 @@ function TeacherMarketplace({ ctx, initialView, close }: {
   }
 
   const renderArtifacts = (): React.ReactElement => {
-    const active = activeTab
+    const active = activeTab !== null && activeArtifacts.some(item => item.id === activeTab.id)
+      ? activeTab
+      : (activeArtifacts[0] ?? null)
     return (
       <div className="dsh-artifacts">
         <section className="dsh-artifacts-list">
