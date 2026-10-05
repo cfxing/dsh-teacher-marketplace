@@ -323,9 +323,11 @@ class ArtifactManager {
         sessionId,
       }
 
+      // 当前版本的公开 ClientSession 直接暴露 eventSource；旧运行时兼容 binding.eventSource。
+      const source = ref.binding?.session?.eventSource ?? ref.binding?.eventSource
+
       const sync = (): void => {
         try {
-          const source = ref.binding?.session?.eventSource ?? ref.binding?.eventSource
           const window = source?.getSnapshot?.()
           const entries = window?.entries ?? []
           const artifacts = extractArtifacts(entries)
