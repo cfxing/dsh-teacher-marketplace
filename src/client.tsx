@@ -438,6 +438,13 @@ class ArtifactManager {
       artifacts: [],
       session: null,
       sessionId: null,
+      debug: {
+        sourceConnected: false,
+        entryCount: 0,
+        eventCount: 0,
+        eventTypes: [],
+        lastEvents: [],
+      },
     }
   }
 
@@ -928,7 +935,8 @@ function kindGlyph(kind: ArtifactKind): string {
     default: return '〙'
   }
 }
-\nfunction ArtifactDebugPanel({ debug, sessionId }: { debug: ArtifactDebug; sessionId: string | null }): React.ReactElement {
+
+function ArtifactDebugPanel({ debug, sessionId }: { debug: ArtifactDebug; sessionId: string | null }): React.ReactElement {
   return (
     <div style={{ padding: 24, overflow: 'auto', height: '100%', fontFamily: 'monospace', fontSize: 12 }}>
       <h2 style={{ fontFamily: 'inherit' }}>产物调试信息</h2>
