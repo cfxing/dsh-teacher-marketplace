@@ -16,7 +16,7 @@ type Teacher = {
   highlights: string[]
 }
 
-type Tab = 'marketplace' | 'mine'
+type View = 'market' | 'mine' | 'artifacts'
 
 const TEACHERS: readonly Teacher[] = [
   {
@@ -56,7 +56,7 @@ export function apply(ctx: Context): void {
   const ui = ctx as any
   let dispose: (() => void) | undefined
 
-  const open = (): void => {
+  const open = (initialView: View = 'market'): void => {
     dispose?.()
     dispose = registerMainPanel(
       ctx,
@@ -65,6 +65,7 @@ export function apply(ctx: Context): void {
       () => (
         <TeacherMarketplace
           ctx={ctx}
+          initialView={initialView}
           close={() => {
             dispose?.()
             dispose = undefined
@@ -85,7 +86,7 @@ export function apply(ctx: Context): void {
         className="dsh-teacher-launcher"
         title="智能体"
         aria-label="智能体"
-        onClick={open}
+        onClick={() => open('market')}
       >
         <span className="dsh-teacher-launcher-icon">师</span>
         <span>智能体</span>
@@ -222,14 +223,214 @@ async function loadAvailablePresets(ctx: any): Promise<Set<string>> {
   }
 }
 
-function TeacherMarketplace({ ctx, close }: { ctx: Context; close: () => void }) {
-  const [tab, setTab] = useState<Tab>('marketplace')
+/* ------------------------------------------------------------------ *
+ * 学习产物识别
+ *
+ * 教师在工作区中生成的 html / 视频 / 图片 / 文件，会以会话事件的方式
+ * 落在 Client 的 SessionEventWindow 里。这里对事件做防御式探测：
+ * 只要事件数据里出现带可渲染地址或文件路径的可识别产物，就抽取出来。
+ * 字段名与宿主真实的产物结构可能略有差异，需实机验证后按反馈校准。
+ * ------------------------------------------------------------------ */
+
+type ArtifactKind = 'html' | 'video' | 'image' | 'file'
+
+type Artifact = {
+  id: string
+  kind: ArtifactKind
+  title: string
+  /** 可直连渲染的源地址（同源 / blob / data 均可）。 */
+  url?: string
+  /** 文件路径（取不到可渲染地址时给用户定位使用）。 */
+  path?: string
+  /** html 型产物若直接携带代码片段，则用 srcdoc 渲染。 */
+  html?: string
+}
+
+function kindOfName(name: string): ArtifactKind {
+  const lower = name.toLowerCase()
+  if (/\.html?$/.test(lower)) return 'html'
+  if (/\.(mp4|webm|mov|m4v)$/.test(lower)) return 'video'
+  if (/\.(png|jpe?g|gif|webp|svg)$/.test(lower)) return 'image'
+  return 'file'
+}
+
+function urlCandidates(value: unknown): Array<string | undefined> {
+  const out: Array<string | undefined> = []
+  if (typeof value === 'string') {
+    if (/^(https?:|blob:|data:|file:|)[^:]*\/(.)+/i.test(value)) out.push(value)
+    return out
+  }
+  if (value !== null && typeof value === 'object') {
+    const rec = value as Record<string, unknown>
+    for (const key of ['url', 'src', 'href', 'uri', 'previewUrl', 'playUrl']) {
+      const v = rec[key]
+      if (typeof v === 'string' && v.trim() !== '') out.push(v)
+    }
+  }
+  return out
+}
+
+function nameCandidates(value: unknown): string | undefined {
+  if (typeof value === 'string') return value
+  if (value !== null && typeof value === 'object') {
+    const rec = value as Record<string, unknown>
+    for (const key of ['name', 'title', 'fileName', 'filename', 'path']) {
+      const v = rec[key]
+      if (typeof v === 'string' && v.trim() !== '') return v
+    }
+    const path = rec['path']
+    if (typeof path === 'string') return path
+  }
+  return undefined
+}
+
+function htmlBodyFrom(value: unknown): string | undefined {
+  if (typeof value === 'string' && /^\s*<(!doctype|html)/i.test(value)) return value
+  if (value !== null && typeof value === 'object') {
+    const rec = value as Record<string, unknown>
+    for (const key of ['html', 'content', 'code', 'body']) {
+      const v = rec[key]
+      if (typeof v === 'string' && /<(!doctype|html|body|div)/i.test(v)) return v
+    }
+  }
+  return undefined
+}
+
+/** 递归扫描一个对象的叶子值，找出所有可能代表一个"产物"的对象节点。 */
+function collectArtifactNodes(node: unknown, depth: number, seen: Set<object>, out: unknown[]): void {
+  if (depth > 6 || node === null || node === undefined) return
+  if (typeof node !== 'object') return
+  if (typeof (node as object) === 'object' && (node as object) !== null) {
+    if (seen.has(node as object)) return
+    seen.add(node as object)
+  }
+
+  const rec = node as Record<string, unknown>
+  const name = nameCandidates(rec)
+  const hasUrl = urlCandidates(rec).some(Boolean)
+
+  if ((name !== undefined && hasUrl) || htmlBodyFrom(rec) !== undefined || hasUrl) {
+    out.push(node)
+    return
+  }
+
+  for (const value of Object.values(rec)) {
+    if (typeof value === 'object' && value !== null) {
+      collectArtifactNodes(value, depth + 1, seen, out)
+    }
+  }
+}
+
+function extractArtifacts(events: readonly unknown[]): Artifact[] {
+  const nodes: unknown[] = []
+  const seen = new Set<object>()
+  const bodies: string[] = []
+  const urls: string[] = []
+  const paths: string[] = []
+
+  const scanValue = (value: unknown): void => {
+    if (typeof value === 'string') {
+      const body = htmlBodyFrom(value)
+      if (body !== undefined) bodies.push(body)
+      else {
+        const t = (value.trim().match(/\S+$/) ?? [''])[0]
+        if (t.startsWith('/') || t.includes('/')) paths.push(value)
+      }
+      return
+    }
+    collectArtifactNodes(value, 0, seen, nodes)
+  }
+
+  for (const entry of events as Array<Record<string, unknown>>) {
+    const event = deepField(entry, 'event') ?? entry
+    if (event === null || typeof event !== 'object') continue
+    const data = deepField(event, 'data')
+    if (data !== undefined) scanValue(data)
+    for (const value of Object.values(event)) {
+      if (value !== data) scanValue(value)
+    }
+  }
+
+  for (const node of nodes) {
+    const rec = node as Record<string, unknown>
+    const path = typeof rec['path'] === 'string' ? rec['path'] : undefined
+    const name = nameCandidates(rec) ?? path ?? '学习产物'
+    if (path) paths.push(path)
+    for (const u of urlCandidates(rec)) if (u) urls.push(u)
+    const body = htmlBodyFrom(rec)
+    if (body) bodies.push(body)
+  }
+
+  const artifacts: Artifact[] = []
+  let serial = 0
+
+  for (const body of bodies) {
+    const le = body.length
+    artifacts.push({
+      id: `html-${serial++}`,
+      kind: 'html',
+      title: `学习文档 ${artifacts.length + 1}`,
+      html: body,
+    })
+    void le
+  }
+
+  for (const u of urls) {
+    const name = u.split(/[\\/]/).pop() ?? ''
+    artifacts.push({
+      id: `url-${serial++}`,
+      kind: kindOfName(name),
+      title: name ? decodeURIComponent(name) : `资源 ${artifacts.length + 1}`,
+      url: u,
+    })
+  }
+
+  for (const p of paths) {
+    const name = p.split(/[\\/]/).pop() ?? p
+    artifacts.push({
+      id: `path-${serial++}`,
+      kind: kindOfName(name),
+      title: name ? decodeURIComponent(name) : `文件 ${artifacts.length + 1}`,
+      path: p,
+    })
+  }
+
+  // 去重并过滤掉明显是纯文本的工具输出。
+  const unique = new Map<string, Artifact>()
+  for (const art of artifacts) {
+    const key = art.url ?? art.html ?? art.path ?? art.id
+    if (!unique.has(key)) unique.set(key, art)
+  }
+  return [...unique.values()].filter(art => art.url !== undefined || art.html !== undefined || art.path !== undefined)
+}
+
+/** 在嵌套对象里按 `.` 路径读字段（用于取 `event.data` 等）。 */
+function deepField(root: unknown, keyPath: string): unknown {
+  const parts = keyPath.split('.')
+  let cur: unknown = root
+  for (const part of parts) {
+    if (cur === null || cur === undefined || typeof cur !== 'object') return undefined
+    cur = (cur as Record<string, unknown>)[part]
+  }
+  return cur
+}
+
+function TeacherMarketplace({ ctx, initialView, close }: {
+  ctx: Context
+  initialView: View
+  close: () => void
+}) {
+  const [view, setView] = useState<View>(initialView)
   const [saved, setSaved] = useState<string[]>(readSaved)
   const [available, setAvailable] = useState<Set<string>>(() => new Set())
   const [loadingPreset, setLoadingPreset] = useState('')
   const [selected, setSelected] = useState<Teacher | null>(null)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+
+  // 学习产物：订阅当前保留会话的事件窗口，抽取工具生成的内容。
+  const [activeArtifacts, setActiveArtifacts] = useState<Artifact[]>([])
+  const [activeTab, setActiveTab] = useState<Artifact | null>(null)
 
   useEffect(() => {
     let alive = true
@@ -238,6 +439,56 @@ function TeacherMarketplace({ ctx, close }: { ctx: Context; close: () => void })
     })
     return () => {
       alive = false
+    }
+  }, [ctx])
+
+  useEffect(() => {
+    const sessions: any = (ctx as any).sessions
+    if (!sessions || typeof sessions.retain !== 'function') {
+      setNotice('当前环境未提供会话订阅能力，学习产物暂不可用。')
+      return
+    }
+
+    const list = sessions.list?.getSnapshot?.()
+    const byId = list?.byId ?? {}
+    const live = (Object.values(byId) as any[])
+      .filter((s: any) => s.blank !== true && !s.removed)
+      .sort((a: any, b: any) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))[0]
+    if (live === undefined || typeof live.id !== 'string') return
+
+    const ref = sessions.retain(live.id, { source: 'controllerOperation' })
+    let sub: (() => void) | undefined
+    let cancelled = false
+
+    const sync = (): void => {
+      if (cancelled) return
+      try {
+        const window = ref.binding?.eventSource?.getSnapshot?.()
+        const entries = window?.entries ?? []
+        const arts = extractArtifacts(entries)
+        setActiveArtifacts(arts)
+        if (arts.length > 0) {
+          setActiveTab(prev => prev ?? arts[0])
+        }
+      } catch {
+        // 事件窗口未就绪时跳过本轮抽取。
+      }
+    }
+
+    const source = ref.binding?.eventSource
+    if (source && typeof source.subscribe === 'function') {
+      sub = source.subscribe(sync)
+    }
+    sync()
+
+    return () => {
+      cancelled = true
+      sub?.()
+      try {
+        ref.release?.()
+      } catch {
+        // 释放失败不影响插件卸载。
+      }
     }
   }, [ctx])
 
@@ -327,26 +578,70 @@ function TeacherMarketplace({ ctx, close }: { ctx: Context; close: () => void })
     )
   }
 
+  const renderArtifacts = (): React.ReactElement => {
+    const active = activeTab
+    return (
+      <div className="dsh-artifacts">
+        <section className="dsh-artifacts-list">
+          {activeArtifacts.length === 0 ? (
+            <div className="dsh-teacher-empty compact">
+              <div className="dsh-teacher-empty-icon">◇</div>
+              <h2>还没有学习产物</h2>
+              <p>先开始学习，老师生成的文档、动画、视频会展示在这里，不再被折叠在工具里。</p>
+              <button className="dsh-teacher-primary" onClick={() => setView('market')}>
+                去开始学习
+              </button>
+            </div>
+          ) : (
+            activeArtifacts.map(art => (
+              <button
+                key={art.id}
+                className={`dsh-artifact-item${active?.id === art.id ? ' active' : ''}`}
+                onClick={() => setActiveTab(art)}
+              >
+                <span className="dsh-artifact-kind">{kindGlyph(art.kind)}</span>
+                <span className="dsh-artifact-title">{art.title}</span>
+              </button>
+            ))
+          )}
+        </section>
+        <section className="dsh-artifacts-preview">
+          {active === null ? (
+            <div className="dsh-artifacts-empty">
+              <span>从左侧选择一项产物预览</span>
+            </div>
+          ) : (
+            <ArtifactPreview artifact={active} key={active.id} />
+          )}
+        </section>
+      </div>
+    )
+  }
+
   return (
     <div className="dsh-teacher-shell">
-      <header className="dsh-teacher-header">
-        <div className="dsh-teacher-heading">
-          <button className="dsh-teacher-back" onClick={close} aria-label="返回">‹</button>
-          <div>
-            <h1>智能体</h1>
-            <p>选择一个老师，直接开始学习，不需要了解 Agent 或 Skill。</p>
-          </div>
+      <aside className="dsh-teacher-rail">
+        <div className="dsh-teacher-rail-head">
+          <span className="dsh-teacher-rail-brand">学习工作台</span>
+          <button className="dsh-teacher-new" onClick={() => setView('market')}>＋ 新建学习</button>
         </div>
-      </header>
-
-      <nav className="dsh-teacher-tabs" aria-label="智能体分类">
-        <button className={tab === 'marketplace' ? 'active' : ''} onClick={() => setTab('marketplace')}>
-          智能体广场
-        </button>
-        <button className={tab === 'mine' ? 'active' : ''} onClick={() => setTab('mine')}>
-          我的智能体{saved.length > 0 ? ` · ${saved.length}` : ''}
-        </button>
-      </nav>
+        <nav className="dsh-teacher-rail-nav" aria-label="学习工作台导航">
+          <div className="dsh-teacher-rail-group">学习</div>
+          <button className={view === 'market' ? 'active' : ''} onClick={() => setView('market')}>
+            <span className="dsh-teacher-rail-icon">▦</span>智能体广场
+          </button>
+          <button className={view === 'mine' ? 'active' : ''} onClick={() => setView('mine')}>
+            <span className="dsh-teacher-rail-icon">☆</span>我的智能体
+            {saved.length > 0 ? <em>{saved.length}</em> : null}
+          </button>
+          <button className={view === 'artifacts' ? 'active' : ''} onClick={() => setView('artifacts')}>
+            <span className="dsh-teacher-rail-icon">◇</span>学习产物
+          </button>
+        </nav>
+        <div className="dsh-teacher-rail-foot">
+          <button className="dsh-teacher-back" onClick={close} aria-label="返回">返回</button>
+        </div>
+      </aside>
 
       <main className="dsh-teacher-main">
         {error && (
@@ -357,7 +652,7 @@ function TeacherMarketplace({ ctx, close }: { ctx: Context; close: () => void })
         )}
         {notice && <div className="dsh-teacher-notice">{notice}</div>}
 
-        {tab === 'marketplace' && (
+        {view === 'market' && (
           <>
             <section className="dsh-teacher-hero">
               <div>
@@ -373,14 +668,14 @@ function TeacherMarketplace({ ctx, close }: { ctx: Context; close: () => void })
           </>
         )}
 
-        {tab === 'mine' && (
+        {view === 'mine' && (
           <>
             {savedTeachers.length === 0 ? (
               <div className="dsh-teacher-empty">
                 <div className="dsh-teacher-empty-icon">☆</div>
                 <h2>还没有添加老师</h2>
                 <p>去智能体广场添加你常用的老师，他们会出现在这里。</p>
-                <button className="dsh-teacher-primary" onClick={() => setTab('marketplace')}>
+                <button className="dsh-teacher-primary" onClick={() => setView('market')}>
                   去智能体广场
                 </button>
               </div>
@@ -391,6 +686,8 @@ function TeacherMarketplace({ ctx, close }: { ctx: Context; close: () => void })
             )}
           </>
         )}
+
+        {view === 'artifacts' && renderArtifacts()}
       </main>
 
       {selected !== null && (
@@ -434,6 +731,52 @@ function TeacherMarketplace({ ctx, close }: { ctx: Context; close: () => void })
           </article>
         </div>
       )}
+    </div>
+  )
+}
+
+function kindGlyph(kind: ArtifactKind): string {
+  switch (kind) {
+    case 'html': return '⌘'
+    case 'video': return '▶'
+    case 'image': return '♪'
+    default: return '〙'
+  }
+}
+
+function ArtifactPreview({ artifact }: { artifact: Artifact }): React.ReactElement {
+  if (artifact.html !== undefined) {
+    return (
+      <iframe
+        className="dsh-artifact-frame"
+        title={artifact.title}
+        srcDoc={artifact.html}
+        sandbox="allow-scripts allow-same-origin"
+      />
+    )
+  }
+  if (artifact.kind === 'video' && artifact.url !== undefined) {
+    return <video className="dsh-artifact-media" src={artifact.url} controls autoPlay muted />
+  }
+  if (artifact.kind === 'image' && artifact.url !== undefined) {
+    return <img className="dsh-artifact-media" src={artifact.url} alt={artifact.title} />
+  }
+  if (artifact.url !== undefined) {
+    return <iframe className="dsh-artifact-frame" title={artifact.title} src={artifact.url} sandbox="allow-scripts allow-same-origin" />
+  }
+  if (artifact.path !== undefined) {
+    return (
+      <div className="dsh-artifact-path">
+        <div className="dsh-teacher-empty-icon">〙</div>
+        <h2>已定位产物文件</h2>
+        <p>{artifact.path}</p>
+        <span className="dsh-artifact-note">该文件未提供可直连预览地址，请在会话中打开查看。</span>
+      </div>
+    )
+  }
+  return (
+    <div className="dsh-artifacts-empty">
+      <span>无法预览此产物</span>
     </div>
   )
 }
