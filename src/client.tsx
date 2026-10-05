@@ -260,10 +260,20 @@ type Artifact = {
   attachmentId?: string
 }
 
+type ArtifactDebug = {
+  sourceConnected: boolean
+  entryCount: number
+  eventCount: number
+  eventTypes: string[]
+  lastEvents: string[]
+  error?: string
+}
+
 type ArtifactManagerSnapshot = {
   artifacts: Artifact[]
   session: any | null
   sessionId: string | null
+  debug: ArtifactDebug
 }
 
 /**
@@ -284,6 +294,13 @@ class ArtifactManager {
     artifacts: [],
     session: null,
     sessionId: null,
+    debug: {
+      sourceConnected: false,
+      entryCount: 0,
+      eventCount: 0,
+      eventTypes: [],
+      lastEvents: [],
+    },
   }
 
   constructor(private readonly ctx: any) {}
@@ -321,6 +338,13 @@ class ArtifactManager {
         artifacts: [],
         session: ref.binding?.session ?? null,
         sessionId,
+        debug: {
+          sourceConnected: false,
+          entryCount: 0,
+          eventCount: 0,
+          eventTypes: [],
+          lastEvents: [],
+        },
       }
 
       // 当前版本的公开 ClientSession 直接暴露 eventSource；旧运行时兼容 binding.eventSource。
@@ -330,16 +354,46 @@ class ArtifactManager {
         try {
           const window = source?.getSnapshot?.()
           const entries = window?.entries ?? []
+          const events = entries
+            .filter((entry: any) => entry?.type === 'event')
+            .map((entry: any) => entry?.event)
+            .filter((event: any) => event && typeof event === 'object')
+          const eventTypes = [...new Set(events.map((event: any) => String(event.type ?? 'unknown')))]
+          const lastEvents = events.slice(-8).map((event: any) => {
+            try {
+              return JSON.stringify({
+                type: event.type,
+                seq: event.seq,
+                data: event.data,
+              }).slice(0, 1200)
+            } catch {
+              return '[无法序列化 event]'
+            }
+          })
           const artifacts = extractArtifacts(entries)
           this.snapshotValue = {
             artifacts,
             session: ref.binding?.session ?? this.snapshotValue.session,
             sessionId,
+            debug: {
+              sourceConnected: Boolean(source),
+              entryCount: entries.length,
+              eventCount: events.length,
+              eventTypes,
+              lastEvents,
+            },
           }
           this.emit()
-        } catch {
-          // Event window may not be ready during Session startup; the next event
-          // will trigger another sync.
+        } catch (reason) {
+          this.snapshotValue = {
+            ...this.snapshotValue,
+            debug: {
+              ...this.snapshotValue.debug,
+              sourceConnected: Boolean(source),
+              error: errorMessage(reason),
+            },
+          }
+          this.emit()
         }
       }
 
@@ -355,6 +409,13 @@ class ArtifactManager {
         artifacts: [],
         session: null,
         sessionId: null,
+        debug: {
+          sourceConnected: false,
+          entryCount: 0,
+          eventCount: 0,
+          eventTypes: [],
+          lastEvents: [],
+        },
       }
     }
   }
@@ -734,9 +795,7 @@ function TeacherMarketplace({ ctx, artifactManager, initialView, close }: {
         </section>
         <section className="dsh-artifacts-preview">
           {active === null ? (
-            <div className="dsh-artifacts-empty">
-              <span>从左侧选择一项产物预览</span>
-            </div>
+            <ArtifactDebugPanel debug={artifactSnapshot.debug} sessionId={artifactSnapshot.sessionId} />
           ) : (
             <ArtifactPreview artifact={active} session={activeSession} key={active.id} />
           )}
@@ -869,6 +928,28 @@ function kindGlyph(kind: ArtifactKind): string {
     default: return '〙'
   }
 }
+\nfunction ArtifactDebugPanel({ debug, sessionId }: { debug: ArtifactDebug; sessionId: string | null }): React.ReactElement {
+  return (
+    <div style={{ padding: 24, overflow: 'auto', height: '100%', fontFamily: 'monospace', fontSize: 12 }}>
+      <h2 style={{ fontFamily: 'inherit' }}>产物调试信息</h2>
+      <div>Session ID: {sessionId ?? '无'}</div>
+      <div>eventSource: {debug.sourceConnected ? '已连接' : '未连接'}</div>
+      <div>entries: {debug.entryCount}</div>
+      <div>events: {debug.eventCount}</div>
+      <div>event types: {debug.eventTypes.join(', ') || '无'}</div>
+      {debug.error && <pre>读取事件失败：{debug.error}</pre>}
+      <h3>最近 8 个事件（每个最多 1200 字符）</h3>
+      {debug.lastEvents.length === 0 ? (
+        <div>暂无事件。请先开始学习并让老师生成一次 HTML。</div>
+      ) : (
+        debug.lastEvents.map((item, index) => (
+          <pre key={index} style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', marginBottom: 12 }}>{item}</pre>
+        ))
+      )}
+    </div>
+  )
+}
+
 
 function ArtifactPreview({ artifact, session }: { artifact: Artifact; session: any }): React.ReactElement {
   const objectUrl = useAttachmentObjectUrl(session, artifact)
