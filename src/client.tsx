@@ -440,35 +440,66 @@ function collectContentBlocks(content: unknown, out: Artifact[]): void {
  */
 function collectFromEvent(event: unknown, out: Artifact[]): void {
   if (event === null || typeof event !== 'object') return
-  const rec = event as Record<string, unknown>
-  const data = rec['data']
 
-  const message = (data !== null && typeof data === 'object')
-    ? (data as Record<string, unknown>)['message']
-    : undefined
-  if (message !== null && typeof message === 'object') {
-    collectContentBlocks((message as Record<string, unknown>)['content'], out)
-    // html 片段可能直接作为字符串正文出现（assistant/message → text 块）。
-    const blocks = (message as Record<string, unknown>)['content']
-    if (Array.isArray(blocks)) {
-      for (const block of blocks) {
-        if (block === null || typeof block !== 'object') continue
-        const br = block as Record<string, unknown>
-        if (br['type'] === 'text' && typeof br['text'] === 'string') {
-          const body = htmlBodyFrom(br['text'])
-          if (body !== undefined) pushArtifact(out, { kind: 'html', title: '学习文档', html: body })
+  // 不同 Harness/工具版本对 tool/result 的 payload 包装层并不完全一致：
+  // 有的放在 data.message.content，有的直接是 data.content / data.result，
+  // 还有工具把文件引用放进 artifact/output/result 的对象里。
+  // 因此这里不再押注单一字段路径，而是对“产物相关字段”做有限深度扫描。
+  const seen = new Set<object>()
+
+  const visit = (value: unknown, depth: number): void => {
+    if (value === null || value === undefined || depth > 5) return
+
+    if (typeof value === 'string') {
+      const body = htmlBodyFrom(value)
+      if (body !== undefined) {
+        pushArtifact(out, { kind: 'html', title: '学习文档', html: body })
+      }
+      return
+    }
+
+    if (typeof value !== 'object') return
+    if (seen.has(value as object)) return
+    seen.add(value as object)
+
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item, depth + 1)
+      return
+    }
+
+    const rec = value as Record<string, unknown>
+
+    // 标准 file/image 内容块。
+    if (rec['type'] === 'file' || rec['type'] === 'image') {
+      collectContentBlocks([rec], out)
+    }
+
+    // 产物对象常见的直接引用字段。
+    const artifactish = ['artifact', 'artifacts', 'attachment', 'attachments', 'output', 'outputs', 'result', 'content', 'message', 'meta', 'file', 'files']
+    for (const key of artifactish) {
+      if (key in rec) visit(rec[key], depth + 1)
+    }
+
+    // 对明确的 URL/路径/文件名字段直接收集；不会把普通文本当成产物。
+    for (const key of ['url', 'src', 'href', 'uri', 'previewUrl', 'playUrl', 'file', 'filename', 'name', 'path']) {
+      const value = rec[key]
+      if (typeof value === 'string') {
+        const body = htmlBodyFrom(value)
+        if (body !== undefined) {
+          pushArtifact(out, { kind: 'html', title: '学习文档', html: body })
+        } else if (isUrlLike(value)) {
+          pushArtifact(out, { kind: kindOfName(value), title: fileNameTail(value) ?? '学习资源', url: value })
+        } else {
+          const tail = fileNameTail(value)
+          if (tail !== undefined) {
+            pushArtifact(out, { kind: kindOfName(tail), title: decodeURIComponent(tail), path: value })
+          }
         }
       }
     }
   }
 
-  // tool/result.data.meta —— 工具私有描述，常见字段名做宽容匹配。
-  const meta = (data !== null && typeof data === 'object')
-    ? (data as Record<string, unknown>)['meta']
-    : undefined
-  if (meta !== null && typeof meta === 'object') {
-    collectFromMeta(meta as Record<string, unknown>, out)
-  }
+  visit(event, 0)
 }
 
 /** 工具私有 meta 的宽容探测：只认明确的 filename/path/url/html 字段。 */
