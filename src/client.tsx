@@ -562,7 +562,7 @@ function collectFromEvent(event: unknown, out: Artifact[]): void {
     }
 
     // 产物对象常见的直接引用字段。
-    const artifactish = ['artifact', 'artifacts', 'attachment', 'attachments', 'output', 'outputs', 'result', 'content', 'message', 'meta', 'file', 'files']
+    const artifactish = ['data', 'artifact', 'artifacts', 'attachment', 'attachments', 'output', 'outputs', 'result', 'content', 'message', 'meta', 'file', 'files']
     for (const key of artifactish) {
       if (key in rec) visit(rec[key], depth + 1)
     }
