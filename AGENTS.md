@@ -20,6 +20,7 @@ UI 为「数学派 Shuxuepai」风格工作台（浅米白书架侧栏 + 纸白�
 - 插件名 `dsh-teacher-marketplace`，`inject: []`；客户端注入点：`sidebar.footer.action`（智能体入口）+ `main`（工作台面板，3 个视图：market / mine / artifacts）
 - 两个 Agent Preset：`ai-math-teacher`、`ai-physics-teacher`（只负责教师人格与教学策略，**不重复挂载** `dsh-wrong-question`、`dshmath-manim` 等宿主级插件，避免 Harness 0.2.x eager mount 导致 DB/路由/工具多份创建）
 - 宿主级插件（`dsh-wrong-question`、`dshmath-manim`）由 web profile 宿主层统一加载
+- **Preset 教学/视频规则对齐宿主 `agent.cordis.yml`**：学习视频画面必须由 `dshmath-manim` 生成（`list_math_templates` → `render_math_scene`，模板不满足走 `validate_math_code` → `render_math_code`）；默认必含中文旁白；**输出目录固定为工作区绝对路径 `{{cwd}}/manim_out` 并显式传 outdir，禁止用插件安装目录/node_modules，禁止因路径问题改走 bash/python/manim CLI**。`{{cwd}}` 是 persona 模板变量，会被解析，不能当静态文本。
 - 学习产物抽取：client 通过 `ctx.sessions.retain()` 订阅最活跃非 blank 会话的 `binding.eventSource`（`SessionEventWindow`），从 `entries[].event` 按 `SessionEvent.data` 结构**定点抽取**（见下方"常见问题和预防"）：识别 html / 视频 / 图片 / 文件；产物渲染 `ArtifactPreview`（html→srcdoc iframe、video/image/html/file→媒体或 iframe、附件走 `readAttachment` 转 blob URL、仅 path→路径卡片）。
 
 ## 运行与预览

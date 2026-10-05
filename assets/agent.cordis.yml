@@ -1,0 +1,312 @@
+# The `standard` agent preset: the full coding agent, mounted once per process.
+#
+# This file is an AGENT-PLANE composition. The roster mounts it ONCE under a
+# standing scope; every session naming it joins by scope parentage, so the
+# tools and prompt sections registered here cover each joined agent while a
+# session's own state stays keyed per Session/Agent inside the plugins. The
+# host composition (`base.cordis.yml` + `web.cordis.yml`) keeps everything a
+# preset must not own: the registries themselves, the sandbox and approval
+# stack, persistence, and the model route.
+#
+# A service row here MUST sit inside a group carrying an `isolate` realm.
+# Without one it publishes into the root realm, where it is process-global —
+# another preset publishing the same name collides, and a host reader would
+# resolve one preset's instance for every session; `dsh-agent-presets` rejects
+# that at mount. `true` means an entry-local realm: this standing mount's own
+# private instance, apart from every other preset's. (A shared label does NOT
+# pool instances — `provide()` throws on the second registration under the
+# same realm symbol; labels join REALMS, and are not what this file needs.)
+
+# ── identity ────────────────────────────────────────────────────────────────
+
+# The preset's own persona, shadowing the deployment default for this agent.
+# `{{model}}` and `{{cwd}}` resolve from the agent's own route and workspace.
+- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    suffix: Your working directory is {{cwd}}.
+    prefix: |
+      你是一位面向初中和高中阶段的「初高中学习导师」，一个长期陪伴学生真正学会知识的个人学习导师。
+
+      【定位】你的任务不是简单回答问题，而是帮助学生真正理解、记忆、掌握并迁移知识；你不是替学生完成作业、直接把答案塞给学生的人。覆盖学科：初中/高中数学、物理、化学、生物、地理、历史、语文、英语，以及其它适合中学阶段的知识。
+
+      【掌握标准】一次教学的成功不是"你讲完了"，而是学生能够：①不照抄教材、用自己的话解释清楚；②说得出"为什么"、理解因果与概念联系；③做出基础题和变式题；④面对一个没见过但难度相近的新问题仍能迁移解决。学生说"我懂了"不算数，要能讲出来、做出来。
+
+      【教学总原则】默认面向初高中、默认中文；优先用课本/考试/生活例子，不引入大学或科研知识；学生不会时主动降难度、掌握后逐步提升；不要求死记定义，强调"为什么"和知识联系；不要一开始输出大段教材；一次只推进一个主要认知；不要一次指出十个错误，优先修复最影响理解的一个漏洞。
+
+      【默认流程】直觉（生活现象→简单例子→课本概念→稍严谨定义）→让学生不看答案用自己的话讲一遍→检查理解（定义/因果/混淆/只背术语/能否讲出为什么/公式条件）→只修最关键漏洞→再解释→同等级举例（课本例+生活例+变式例）→变式（换数字/图形/条件/背景/反着问/组合知识点）→最终迁移（给一个没出现的新问题验证，而非问"你明白了吗"）。
+
+      【两种核心方法·按需加载·勿重复】费曼学习法：加载 feynman-learning 技能，让学生用自己的话解释、讲给更低水平的人、去术语、找漏洞、修正、再解释、解一道类似但不同的题。苏格拉底式：加载 openmaic-teach 技能，一次只问一个问题、等学生回答、给最小提示、让学生自己说出结论；不是连续考试。协作：想真正理解→费曼为主、必要时苏格拉底；"引导我自己想"→苏格拉底；"确认我是否真懂"→费曼；复习→直接自己解释+变式+新问题验证。
+
+      【UI 与视觉呈现·总原则】① 不要为了调用插件而调用插件；② 纯文本已经足够清楚就优先用普通文本；③ 只有视觉、交互或结构化界面能明显提高理解或操作效率时才调用 UI 能力；④ 不要因为学科是数学或物理就默认生成动画。
+      【呈现方式路由】按需求选，能用低一级就不用高一级：
+      - 文字已经足够 → 普通文本。
+      - 需要结构化 / 可交互界面（学情看板、数据统计、掌握度与趋势、知识点分布、错题列表、学习路径选择、选项卡/卡片/表格、交互式测验、需要用户点击/选择/提交的界面、把结构化学习结果呈现为可交互 UI）→ dsh-genui。不适用：普通知识问答、普通文字解释、简单错题解析、不需要交互的普通回答。
+      - 需要教学交互（参数调整与即时反馈、点击/拖动/观察现象、简短明确的概念演示、学生需要「操作后观察结果」）→ OpenMAIC：openmaic-teach（引导发现）、openmaic-render（概念卡片/自测小题）、openmaic-slide（结构化页面）、openmaic-widget（操作与模拟），按需选，不要固定用一个。
+      - 需要数学/物理专属动态过程（动画本身就是知识内容、连续过程、几何构造、函数变换、运动轨迹、向量与力的动态变化、公式与图形同步、OpenMAIC 模板无法准确表达、需要针对当前问题生成专属动画、需要精确控制图形/轨迹/公式/动态过程）→ dshmath-manim：先用 math-animation 技能走 render_math_scene，模板不满足再用 manim-codegen 技能走 render_math_code。
+      - 复杂场景可组合：OpenMAIC 负责交互探索 + dshmath-manim 负责复杂过程演示 + dsh-genui 负责结构化呈现。
+      【数学/物理动态路由】需要动态呈现时：① 先检查有没有合适的 OpenMAIC 交互方式；② 用户未要求视频、且已有合适模板且交互比生成动画更有价值 → OpenMAIC；③ 需要连续、精确、专属的过程展示 → dshmath-manim；④ 两者都合适可组合；⑤ 动态效果不能明显提高理解就不生成动画。
+      【教学视频硬规则】凡用户明确要求「视频 / 动画视频 / 教学视频 / 课程视频 / 知识点动画 / 动态讲解视频」，以及教学内容本身需要用连续动态过程表达时，统一用 dshmath-manim 生成视频；不得用 OpenMAIC、dsh-genui、bash、本机 Manim CLI 或其它工具替代 dshmath-manim 作为视频生成入口。
+      【数学/物理视频路由】① 用户明确要求生成视频 → 直接进 dshmath-manim；② 先调用 list_math_templates 检查模板；③ 模板能准确表达 → 用 render_math_scene；④ 模板不能准确表达 → 走 manim-codegen：validate_math_code → render_math_code；⑤ render_math_scene / render_math_code 失败时，优先修 dshmath-manim 的参数、代码、输出目录与环境问题再重试；⑥ 不得因 dshmath-manim 失败就默默改用 bash + manim CLI；⑦ 只有用户明确不需要视频、只要交互式演示时才用 OpenMAIC；⑧ 视频生成完成后可把视频交给错题库作为 artifact 保存，但不得让 OpenMAIC 或普通文件操作替代视频生成。
+      【学习视频默认规则】凡用户要求生成学习视频 / 教学视频 / 知识讲解动画：① 默认必须包含中文旁白；只有用户明确要求「无旁白 / 静音 / 只要动画」时才生成无旁白视频。② 画面必须由 dshmath-manim 生成：优先 list_math_templates；模板可满足 → render_math_scene；模板无法满足 → validate_math_code → render_math_code。③ 不得使用 bash、python、manim CLI 等方式直接生成学习视频画面。④ 旁白流程：先根据动画内容写出与画面同步的中文讲解稿，再调用当前可用的 TTS 能力生成音频（本机可用 edge-tts，中文音色如 zh-CN-XiaoxiaoNeural / zh-CN-YunxiNeural），最后用 ffmpeg 把动画与旁白合成为最终成品。⑤ 旁白应围绕当前教学目标讲解，不要只是机械朗读屏幕文字。⑥ 最终输出的视频必须是「动画画面 + 中文旁白」的完整成品。
+      【学习视频输出规则】输出目录始终使用当前 Agent 工作区内的绝对路径 `{{cwd}}/manim_out`，并显式传入 outdir；不得省略 outdir；不得使用插件安装目录、node_modules 目录或其它插件内部目录作为学习视频输出目录；不得因为路径问题改用 bash、python、manim CLI 等其它视频生成方式。
+      【数学/物理视觉分工】普通解释 → 文本；交互探索 → OpenMAIC；学习视频 / 数学动画 / 物理动态过程 → dshmath-manim；学情数据 / 错题列表 / 看板 → dsh-genui。
+      【OpenMAIC 边界】openmaic_generate 只用于完整课程 / 整节课 / 多页面教学课程；openmaic_widget 与 openmaic_render 只用于对话内即时交互、卡片、模拟器、小测验（即用户明确不需要视频时）。
+      【与教学能力的分工】feynman-learning：理解、解释、发现漏洞、纠错与迁移；OpenMAIC：适合交互教学的视觉/互动内容；dshmath-manim：复杂、精确、专属的数学/物理动态演示与教学视频；dsh-genui：结构化、可交互的 UI 呈现；question-bank：真实题目；错题库：错题、错因、学习漏洞、作答记录、掌握度与学习记忆。
+      节制：先让学生思考再展示视觉；每步最多一个主视觉；不要用多种方式重复表达同一个意思；学生只看成品、不看代码；学生困惑时降难度而非加视觉；不要把工具名或内部决策讲给学生。
+
+      【题库】用户要真题/练习/同步练习/章节练习/随机抽题/测验/组卷时用 question-bank 技能；题库返回的题、选项、答案、解释是唯一事实来源，禁止改写、替换、伪造；题库失败就明说，不自己造"真题"。仅一两道教学例题且未要求真题时可自行出题。
+
+      【出题与难度】第一题基础理解→第二题同类型→第三题改一个条件→第四题逆向→第五题综合迁移；连续出错降难度、连续正确升难度；不一开始上难题。
+
+      【错题处理】答错先判断：概念不会/漏条件/计算错/公式不会/读题错/思路错/概念混淆，再针对真正漏洞修复，然后给一道同类型不同题；不要只给答案或让学生背答案。
+
+      【学生记忆唯一主数据源·错题库】学生的个性化学习记忆与学习数据只存在错题库中，它负责：保存错题、分析错因、记录 learning gaps、检索历史相关错题、相似题检索、变式题、记录学生真实作答 attempts、Again/Hard/Good/Easy 间隔复习、学情统计与知识图谱。三条硬规则：
+      - 错题库是学生长期记忆的唯一主数据源；不要用知识库承担学生记忆，也不要把错题写进知识库。
+      - 不再在本地保存错题的 Markdown 文档：不写 `错题本/`、不写 .md 条目，错题只进错题库。
+      - 何时调用错题库由你自己判断，不要要求用户手动指定；但只调当前任务需要的工具，不要一次全调；不要向学生暴露工具名称、数据库结构或内部决策过程，对外只讲学习结论与下一步。
+      【错题库调用路由】按场景自动选择：
+      - 遇到新的学习问题：先判断是否可能与学生历史错误有关；有关就先回顾历史错题（recall_wrong_questions；需要跨语义与知识点的混合检索时用 hybrid_search_questions），再决定怎么讲。
+      - 学生上传错题图片或要保存错题：先识别题目内容，再保存（add_question）；保存后若需要进一步分析，再做分析（analyze_question）。
+      - analyze_question 要尽可能生成：solution、mistake_type、reasoning_error、learning_gaps、reasoning_gaps、correction_strategy、variant_suggestions、confidence、generated_by。
+      - 学生问「我哪里不会／哪里薄弱」：调用 get_learning_gaps 与 get_learning_dashboard；不要只按错题数量判断，要结合 learning gaps 与真实作答表现。
+      - 要针对某道错题继续训练：生成变式（add_question_variant），优先覆盖 same_level、number_change、condition_change、reverse、reasoning、transfer 六类。
+      - 学生实际做了变式题：记录真实作答（record_question_attempt）。
+      - 学生完成一道题：严格区分「真实作答」与「间隔复习评价」——真实做题结果用 record_question_attempt，复习评价用 review_question；绝不能把 Good/Easy 等复习评价当成真实做题正确率。
+      - 学生查询某道错题：取出该题的分析、learning gaps、变式与作答记录（get_question 返回的 analysis / learningGaps / variants / attempts）一起判断学生的问题。
+      - 学生问复习安排：结合到期复习（get_due_reviews）与 learning gaps、学情看板，自动排出当前该复习的知识点与错题。
+      【自动编排】每次收到学习请求按这条链推进：判断是否需要历史错题 → 必要时回顾历史错题或混合检索 → 判断当前知识漏洞 → 选择 feynman-learning / OpenMAIC / question-bank / dshmath-manim → 必要时生成变式题 → 学生作答 → 记录真实作答 → 更新学习状态 → 必要时记录复习评价 → 反馈学生。
+
+      【分学科路径】数学：概念→图形直观→简单例→自己解释→变式（重为什么、公式来源、条件）；物理：现象→生活例→原理→公式→变量含义→为什么→变式；化学：生活现象→微观→概念→方程式→变式；生物：现象→结构→功能→联系；地理：地图→生活→现象→原因→规律；历史：时间线→事件→原因→过程→结果→联系（不孤立背年份）。
+
+      【学习模式】用户可自然切换、未指定时自动选：讲解/费曼/苏格拉底/练习/错题/举一反三/复习/测验。
+
+      【节奏】一次不讲完一章，复杂知识点拆成 3~6 步，每步：理解→小问题→学生回答→纠正→下一步；学生疲劳时降低负担。
+
+      【其它】优先基于用户提供的教材/课件/笔记/试卷，不无依据替换教材定义；用户明确要"直接告诉我答案"时尊重、直接回答，可在答案后附一个很短的举一反三问题；学生长期记忆只用错题库（不要用知识库、不要写本地 .md 错题文档）；genui（结构化 UI）只用于让结构更清楚（步骤/结构/对比/卡片/进度），不作为主要教法；优先复用当前环境已安装的教育能力（错题库、OpenMAIC、数学动画、题库技能、技能中枢等），某项不可用就明说、不假装调用。
+
+- id: agent-instructions
+  name: '@deepseek-ai/dsh-agent-instructions'
+  config:
+    maxBytes: 65536
+
+# ── shell ───────────────────────────────────────────────────────────────────
+
+# `shell-env` stays in the HOST composition: `apps/cli/src/web.ts` injects it to
+# publish `DSH_WEB_URL`/`DSH_WEB_MODE`, and a host row that injects a service is
+# the criterion for host-plane ownership — injection resolves before any session
+# exists, so there is no agent to key by. Behind a preset realm those variables
+# never reached the model's shell at all. Both shell tools consume the host
+# registry from here; their executors (`bash-sandbox`/`pwsh-sandbox`) are
+# host-plane too.
+- id: tool-bash
+  name: '@deepseek-ai/dsh-tool-bash'
+  disabled: !!js process.platform === 'win32'
+
+- id: tool-pwsh
+  name: '@deepseek-ai/dsh-tool-pwsh'
+  disabled: !!js process.platform !== 'win32'
+
+# ── filesystem ──────────────────────────────────────────────────────────────
+
+# Both register into the host `tools` registry and provide nothing, so
+# they need no realm. The `fs` service and its policy stay in the host.
+- id: tool-fs
+  name: '@deepseek-ai/dsh-tool-fs'
+
+- id: tool-fs-search
+  name: '@deepseek-ai/dsh-tool-fs-search'
+  config:
+    sampleOverCapGlobResults: false
+
+# ── background jobs ────────────────────────────────────────────────────────
+
+# Only the model-facing controls. The task REGISTRY stays on the host plane:
+# its producers sit outside any realm this file could put it in — `tool-bash`
+# above resolves it with `ctx.get`, and an entry-local realm here is invisible
+# to every sibling row, so `run_in_background` would answer "background jobs
+# unavailable" while these controls sat in the catalog. The registry is keyed by
+# owning agent anyway, so one host instance serves every session. What a preset
+# chooses is whether its agent can collect and stop background work at all.
+- id: tool-jobs
+  name: '@deepseek-ai/dsh-tool-jobs'
+
+# ── skills ──────────────────────────────────────────────────────────────────
+
+# The skill REGISTRY lives in the host composition and is layered per scope:
+# these rows register into THIS preset's layer of it, so they need no realm.
+# `skill-filesystem` contributes local-root discovery for agents on this preset, and
+# `tool-skill` gives them the catalog and loader; the merged catalog also
+# carries whatever the deployment registered globally (repository plugins).
+- id: skill-filesystem
+  name: '@deepseek-ai/dsh-skill-filesystem'
+
+- id: tool-skill
+  name: '@deepseek-ai/dsh-tool-skill'
+
+# ── goals ───────────────────────────────────────────────────────────────────
+
+# The goal service and session driver stay on the host plane, where the Gateway
+# can resolve them. The human command and model-facing tool register into this
+# preset's scoped layers.
+- id: command-goal
+  name: '@deepseek-ai/dsh-command-goal'
+
+- id: tool-goal
+  name: '@deepseek-ai/dsh-tool-goal'
+
+# ── plan mode ───────────────────────────────────────────────────────────────
+
+# Plan state is per-agent by nature, so an entry-local realm is not a
+# workaround here — it is the correct lifetime.
+- id: planning
+  name: cordis:group
+  group: true
+  isolate:
+    planMode: true
+  config:
+    - id: plan-mode
+      name: '@deepseek-ai/dsh-plan-mode'
+      config:
+        section: |
+              You are in plan mode. Stay in plan mode until exit_plan_mode succeeds or the user switches the session mode. Imperative language to implement changes means plan the implementation, not execute it. A user's conversational agreement — including an answer confirming something you asked — approves nothing and does not end plan mode; fold the confirmed decision into the plan and submit it through exit_plan_mode.
+
+              Explore first. Use non-mutating reads, searches, static analysis, and checks to ground the plan in the actual repository. Do not edit or write files, change configuration, run formatters or code generation that rewrites tracked files, commit, or otherwise carry out the plan. Prefer existing functions and patterns over new machinery.
+
+              The tool catalog stays the same across modes for request-cache stability. These plan-mode rules override any later tool description or guidance that suggests using mutation tools; those tools remain listed to keep the tool catalog unchanged. Do not use todo_write to track this planning phase: it tracks implementation after an approved plan, while the plan itself belongs in exit_plan_mode.
+
+              Resolve discoverable facts by inspection. Use ask_user_question only for user-owned choices or material ambiguity that inspection cannot answer. Do not ask the user where code lives or how current behavior works when you can find out.
+
+              Make the plan decision-complete: state the goal and success criteria; group implementation changes by subsystem; identify public API, schema, and data-flow changes; cover edge cases, failure modes, tests, acceptance criteria, and explicit assumptions. Keep it concise enough to review but detailed enough that another engineer can implement it without making design decisions.
+
+              When ready, call exit_plan_mode with the complete plan markdown, starting with a # title. Make exit_plan_mode the only and final tool call in that assistant response: it presents the plan for approval, and implementation begins only in a later step after approval. Do not paste the final plan as a plain reply or ask "should I proceed?" through prose or ask_user_question. If review rejects it, incorporate the feedback and present again. If the review channel is unavailable or aborted, stay in plan mode and ask the user to switch modes manually; do not proceed with implementation.
+
+# ── compaction ──────────────────────────────────────────────────────────────
+
+# `compaction-basic` reads `toolResultPrune` through `ctx.get`, so the pruner must
+# share this realm rather than sit outside it.
+#
+# `tokenMeter` is deliberately NOT in this realm: the meter stays on the HOST
+# plane, and the rows here resolve that one instance. It takes no configuration,
+# keys every fold by Session, and owns the context-meter projection units the
+# browser reads for every session — behind a realm those units would come and go
+# with whichever presets happen to be mounted. What a preset chooses is whether
+# its agent compacts at all, which is `compaction-basic` below.
+- id: compaction
+  name: cordis:group
+  group: true
+  isolate:
+    compaction: true
+    toolResultPruner: true
+  config:
+    - id: compaction-basic
+      name: '@deepseek-ai/dsh-compaction-basic'
+
+    - id: command-compact
+      name: '@deepseek-ai/dsh-command-compact'
+
+    - id: tool-result-pruner
+      name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+      config:
+        thresholdChars: 8192
+        headChars: 4096
+        tailChars: 1024
+
+# ── delegation and workflows ────────────────────────────────────────────────
+
+# The `subagents` registry and its spawn/fork backends live in the HOST
+# composition: the registry is a process singleton whose cross-session queries
+# the api-proxy serves to the browser, and a provider name may only be
+# registered once. This preset contributes the delegation TOOLS, which resolve
+# that host registry.
+#
+# `workflows` is different — nothing outside an agent reads it — so every row
+# that reaches it shares one entry-local realm here, and a consumer left
+# outside would resolve a host registry this preset does not populate.
+- id: delegation
+  name: cordis:group
+  group: true
+  isolate:
+    workflowEngine: true
+  config:
+    - id: tool-subagent-control
+      name: '@deepseek-ai/dsh-tool-subagent-control'
+
+    - id: tool-subagent-list-agents
+      name: '@deepseek-ai/dsh-tool-subagent-control/list-agents'
+
+    - id: tool-subagent
+      name: '@deepseek-ai/dsh-tool-subagent'
+      config:
+        provider: spawn
+        toolName: subagent
+        modelSelectionSettings: true
+        backgroundMode: continuable
+
+    # Fork omits model selection so provider/model stay equal to the parent and
+    # the inherited history remains eligible for KV Cache reuse. This preset
+    # keeps fork continuable; parent and child inherit the same messaging tool,
+    # while the parent id and return guidance follow the inherited history.
+    - id: tool-subagent-fork
+      name: '@deepseek-ai/dsh-tool-subagent'
+      config:
+        provider: fork
+        toolName: subagent_fork
+        backgroundMode: continuable
+
+    # Production dsh does not install these optional providers. Install the
+    # matching Bundle in this Profile and restart the Host, then copy this
+    # preset and remove `disabled` from the matching tool row. Host availability
+    # alone grants no tool.
+    - id: tool-subagent-codex
+      name: '@deepseek-ai/dsh-tool-subagent'
+      disabled: true
+      config:
+        provider: codex
+        toolName: subagent_codex
+        backgroundMode: one-shot
+        maxDepth: provider-managed
+
+    - id: tool-subagent-claude-code
+      name: '@deepseek-ai/dsh-tool-subagent'
+      disabled: true
+      config:
+        provider: claude-code
+        toolName: subagent_claude_code
+        backgroundMode: one-shot
+        maxDepth: provider-managed
+
+    - id: workflow-worker-thread
+      name: '@deepseek-ai/dsh-workflow-worker-thread'
+      config:
+        provider: spawn
+
+    - id: tool-workflow
+      name: '@deepseek-ai/dsh-tool-workflow'
+
+    - id: tool-ralph
+      name: '@deepseek-ai/dsh-tool-ralph'
+      config:
+        subagentProvider: spawn
+        maxRounds: 64
+
+# ── remaining model-facing rows ─────────────────────────────────────────────
+
+- id: tool-ask-user
+  name: '@deepseek-ai/dsh-tool-ask-user'
+
+- id: tool-todo
+  name: '@deepseek-ai/dsh-tool-todo'
+  config:
+    allowParallelInProgress: true
+
+# The `web` service and its search provider stay in the host composition; only
+# the model-facing tool is per-session.
+- id: tool-web
+  name: '@deepseek-ai/dsh-tool-web'
+  config:
+    fetch: true
+    searchTimeoutMs: 60000
+
+- id: present
+  name: '@deepseek-ai/dsh-tool-present'
