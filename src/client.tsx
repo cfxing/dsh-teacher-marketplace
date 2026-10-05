@@ -653,7 +653,7 @@ function extractArtifacts(entries: readonly unknown[]): Artifact[] {
 
 /** 从一段文本里识别 html 文档片段。 */
 function htmlTitleFrom(html: string): string | undefined {
-  const match = html.match(/<title[^>]*>\\s*([^<]+?)\\s*<\\/title>/i)
+  const match = html.match(/<title[^>]*>\s*([^<]+?)\s*<\/title>/i)
   return match?.[1]?.trim() || undefined
 }
 
