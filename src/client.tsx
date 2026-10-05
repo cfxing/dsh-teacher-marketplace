@@ -521,7 +521,16 @@ function collectFromEvent(event: unknown, out: Artifact[]): void {
     if (typeof value === 'string') {
       const body = htmlBodyFrom(value)
       if (body !== undefined) {
-        pushArtifact(out, { kind: 'html', title: '学习文档', html: body })
+        pushArtifact(out, { kind: 'html', title: htmlTitleFrom(body) ?? '学习文档', html: body })
+        return
+      }
+      // tool/call.arguments 通常是 JSON 字符串：{"html":"<!doctype html>..."}
+      // 这里再解一层，才能拿到真正生成的 HTML，而不是只看到 tool/result 的提示文本。
+      try {
+        const parsed = JSON.parse(value)
+        if (parsed !== value) visit(parsed, depth + 1)
+      } catch {
+        // 普通文本不是产物，忽略。
       }
       return
     }
@@ -536,6 +545,16 @@ function collectFromEvent(event: unknown, out: Artifact[]): void {
     }
 
     const rec = value as Record<string, unknown>
+
+    // openmaic_widget 的真正 HTML 产物直接位于 tool/result.meta.html，
+    // 或经过 JSON 包装后位于 tool/call.data.arguments.html。
+    const directHtml = rec['html']
+    if (typeof directHtml === 'string') {
+      const body = htmlBodyFrom(directHtml)
+      if (body !== undefined) {
+        pushArtifact(out, { kind: 'html', title: htmlTitleFrom(body) ?? '学习文档', html: body })
+      }
+    }
 
     // 标准 file/image 内容块。
     if (rec['type'] === 'file' || rec['type'] === 'image') {
@@ -633,6 +652,11 @@ function extractArtifacts(entries: readonly unknown[]): Artifact[] {
 }
 
 /** 从一段文本里识别 html 文档片段。 */
+function htmlTitleFrom(html: string): string | undefined {
+  const match = html.match(/<title[^>]*>\\s*([^<]+?)\\s*<\\/title>/i)
+  return match?.[1]?.trim() || undefined
+}
+
 function htmlBodyFrom(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined
   const text = value.trim()
