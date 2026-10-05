@@ -1,0 +1,12 @@
+[project]
+sub_id = "7aa83122"
+name = "dsh-teacher-marketplace"
+requires = ["nodejs-24"]
+project_type = ""
+version = "0.1.9"
+
+[preview]
+preview_enable = "disabled"
+
+[subprojects]
+path = ["."]
