@@ -568,7 +568,7 @@ function htmlBodyFrom(value: unknown): string | undefined {
   if (/^\s*<(!doctype|html|head|body|div|main|section|article|svg)/i.test(text)) return text
 
   // Tool 常把 HTML 放在 markdown code fence 中；先去掉 fence 再识别。
-  const fenced = text.match(/^\s*```(?:html?|xhtml)?\\s*\\n([\\s\\S]*?)\\n```\\s*$/i)
+  const fenced = text.match(/^\s*```(?:html?|xhtml)?\s*\n([\s\S]*?)\n```\s*$/i)
   if (fenced?.[1] && /^\s*<(!doctype|html|head|body|div|main|section|article|svg)/i.test(fenced[1])) {
     return fenced[1]
   }
