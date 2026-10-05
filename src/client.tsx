@@ -358,7 +358,7 @@ class ArtifactManager {
             .filter((entry: any) => entry?.type === 'event')
             .map((entry: any) => entry?.event)
             .filter((event: any) => event && typeof event === 'object')
-          const eventTypes = [...new Set(events.map((event: any) => String(event.type ?? 'unknown')))]
+          const eventTypes: string[] = [...new Set(events.map((event: any) => String(event.type ?? 'unknown')))] as string[]
           const lastEvents = events.slice(-8).map((event: any) => {
             try {
               return JSON.stringify({
