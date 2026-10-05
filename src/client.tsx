@@ -297,6 +297,15 @@ class ArtifactManager {
     return this.snapshotValue
   }
 
+  /** 页面重新打开/插件热重载后，自动接回当前最新 Harness Session。 */
+  watchLatestSession(): void {
+    const byId = this.ctx.sessions?.list?.getSnapshot?.().byId ?? {}
+    const live = (Object.values(byId) as any[])
+      .filter((item: any) => !item.removed && item.blank !== true)
+      .sort((a: any, b: any) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))[0]
+    if (live?.id) this.watchSession(live.id)
+  }
+
   watchSession(sessionId: string): void {
     if (this.snapshotValue.sessionId === sessionId && this.ref !== null) return
 
@@ -331,7 +340,9 @@ class ArtifactManager {
         }
       }
 
-      const source = ref.binding?.eventSource
+      // 当前版本的公开 ClientSession 直接暴露 eventSource；部分旧运行时
+      // retain() 返回的 binding 也暴露同一个 source，因此两者兼容。
+      const source = ref.binding?.session?.eventSource ?? ref.binding?.eventSource
       if (source && typeof source.subscribe === 'function') {
         this.unsubscribe = source.subscribe(sync)
       }
@@ -520,7 +531,14 @@ function extractArtifacts(entries: readonly unknown[]): Artifact[] {
 /** 从一段文本里识别 html 文档片段。 */
 function htmlBodyFrom(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined
-  if (/^\s*<(!doctype|html|body|div|svg)/i.test(value)) return value
+  const text = value.trim()
+  if (/^\s*<(!doctype|html|head|body|div|main|section|article|svg)/i.test(text)) return text
+
+  // Tool 常把 HTML 放在 markdown code fence 中；先去掉 fence 再识别。
+  const fenced = text.match(/^\s*```(?:html?|xhtml)?\\s*\\n([\\s\\S]*?)\\n```\\s*$/i)
+  if (fenced?.[1] && /^\s*<(!doctype|html|head|body|div|main|section|article|svg)/i.test(fenced[1])) {
+    return fenced[1]
+  }
   return undefined
 }
 
@@ -546,8 +564,12 @@ function TeacherMarketplace({ ctx, artifactManager, initialView, close }: {
   const activeSession = artifactSnapshot.session
 
   useEffect(() => {
+    // 打开面板时先接回已有 Harness Session；这样即使插件页面之前被关闭，
+    // 或插件热重载过，也能从当前 Session 的事件窗口恢复历史产物。
+    artifactManager.watchLatestSession()
     return artifactManager.subscribe(() => {
       forceArtifactUpdate(value => value + 1)
+      setActiveTab(current => current)
     })
   }, [artifactManager])
 
