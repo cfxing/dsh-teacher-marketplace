@@ -216,6 +216,12 @@ async function selectTeacherSession(ctx: any, presetId: string): Promise<any> {
   return session
 }
 
+/** 跳转：让宿主打开指定会话（产物通常就在该会话的对话里可播放）。 */
+async function openSessionInHost(ctx: any, sessionId: string | null): Promise<void> {
+  if (!sessionId) return
+  ctx?.uiWorkspace?.openSession?.(sessionId)
+}
+
 async function loadAvailablePresets(ctx: any): Promise<Set<string>> {
   try {
     const result = await ctx.remote?.agentPresets?.list?.()
@@ -473,6 +479,14 @@ function isUrlLike(value: string): boolean {
   return /^(https?:|blob:|data:|file:)/i.test(value)
 }
 
+/** 提取文本里的 markdown 引用 ![alt](<path>)；用于识别贴在回复里生成的视频/图片。 */
+function markdownRefsFrom(text: string): Array<{ alt: string; url: string }> {
+  return Array.from(text.matchAll(/!\[([^\]]*)\]\(<([^<>\s]+)>\)/g)).map(m => ({
+    alt: m[1] ?? '',
+    url: m[2]?.trim() ?? '',
+  }))
+}
+
 /** 从一个"可能的产物对象"里收集 id/文件名/路径。值精确对应 file/image 内容块。 */
 function collectContentBlocks(content: unknown, out: Artifact[]): void {
   if (!Array.isArray(content)) return
@@ -519,13 +533,26 @@ function collectFromEvent(event: unknown, out: Artifact[]): void {
     if (value === null || value === undefined || depth > 5) return
 
     if (typeof value === 'string') {
+      // markdown 图片引用：![alt](</abs/path.mp4>)
+      // 教师常用它把生成的视频/图片贴进 assistant 消息文本里。
+      for (const ref of markdownRefsFrom(value)) {
+        const refUrl = ref.url
+        const tail = fileNameTail(refUrl)
+        if (tail !== undefined && isUrlLike(refUrl)) {
+          pushArtifact(out, { kind: kindOfName(tail), title: ref.alt !== '' ? ref.alt : decodeURIComponent(tail), url: refUrl })
+        } else if (tail !== undefined) {
+          // 宿主工作区绝对路径（非 http/blob）：不可内联，仅记录 path 供跳转。
+          pushArtifact(out, { kind: kindOfName(tail), title: ref.alt !== '' ? ref.alt : decodeURIComponent(tail), path: refUrl })
+        }
+      }
+
       const body = htmlBodyFrom(value)
       if (body !== undefined) {
         pushArtifact(out, { kind: 'html', title: htmlTitleFrom(body) ?? '学习文档', html: body })
         return
       }
-      // tool/call.arguments 通常是 JSON 字符串：{"html":"<!doctype html>..."}
-      // 这里再解一层，才能拿到真正生成的 HTML，而不是只看到 tool/result 的提示文本。
+      // tool/call.arguments 通常是 JSON 字符串：{"html":"<!doctype html>..."} 或
+      // {"path": "/abs/ComplexEquation.mp4"}。解一层再继续，才能拿到真正产物引用。
       try {
         const parsed = JSON.parse(value)
         if (parsed !== value) visit(parsed, depth + 1)
@@ -831,7 +858,12 @@ function TeacherMarketplace({ ctx, artifactManager, initialView, close }: {
           {active === null ? (
             <ArtifactDebugPanel debug={artifactSnapshot.debug} sessionId={artifactSnapshot.sessionId} />
           ) : (
-            <ArtifactPreview artifact={active} session={activeSession} key={active.id} />
+            <ArtifactPreview
+              artifact={active}
+              session={activeSession}
+              key={active.id}
+              onOpenInSession={() => { void openSessionInHost(ctx, artifactSnapshot.sessionId) }}
+            />
           )}
         </section>
       </div>
@@ -986,10 +1018,15 @@ function ArtifactDebugPanel({ debug, sessionId }: { debug: ArtifactDebug; sessio
 }
 
 
-function ArtifactPreview({ artifact, session }: { artifact: Artifact; session: any }): React.ReactElement {
+function ArtifactPreview({ artifact, session, onOpenInSession }: {
+  artifact: Artifact
+  session: any
+  onOpenInSession?: () => void
+}): React.ReactElement {
   const objectUrl = useAttachmentObjectUrl(session, artifact)
   const url = objectUrl ?? artifact.url
   const useObjectUrl = objectUrl !== undefined && artifact.url === undefined
+  const jump = (): void => { onOpenInSession?.() }
 
   if (artifact.html !== undefined) {
     return (
@@ -1018,7 +1055,10 @@ function ArtifactPreview({ artifact, session }: { artifact: Artifact; session: a
       <div className="dsh-artifact-path">
         <div className="dsh-teacher-empty-icon">〙</div>
         <h2>{artifact.title}</h2>
-        <span className="dsh-artifact-note">附件读取中或不可在此预览，请在会话中打开查看。</span>
+        <span className="dsh-artifact-note">附件读取中或不可在此预览，可跳转到会话中打开查看。</span>
+        {onOpenInSession !== undefined && (
+          <button className="dsh-teacher-primary" onClick={jump}>在会话中打开</button>
+        )}
       </div>
     )
   }
@@ -1028,13 +1068,19 @@ function ArtifactPreview({ artifact, session }: { artifact: Artifact; session: a
         <div className="dsh-teacher-empty-icon">〙</div>
         <h2>已定位产物文件</h2>
         <p>{artifact.path}</p>
-        <span className="dsh-artifact-note">该文件未提供可直连预览地址，请在会话中打开查看。</span>
+        <span className="dsh-artifact-note">该文件为宿主工作区文件，无法在当前面板内联播放，可跳转到会话中打开查看。</span>
+        {onOpenInSession !== undefined && (
+          <button className="dsh-teacher-primary" onClick={jump}>在会话中打开</button>
+        )}
       </div>
     )
   }
   return (
     <div className="dsh-artifacts-empty">
-      <span>无法预览此产物</span>
+      <span>无法在此预览此产物</span>
+      {onOpenInSession !== undefined && (
+        <button className="dsh-teacher-primary" onClick={jump}>在会话中打开</button>
+      )}
     </div>
   )
 }

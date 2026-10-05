@@ -33,6 +33,12 @@ UI 为「数学派 Shuxuepai」风格工作台（浅米白书架侧栏 + 纸白�
 - Agent Preset 定义会 eager mount：教师 Preset 只放身份与教学行为提示，宿主级插件必须由 web profile 宿主层统一加载，避免重复实例化
 - 学习产物预览无法在本仓库本地验证（非预览型插件，产物数据在宿主运行时生成）：交付以 `pnpm build` + `pnpm typecheck` 通过为准，是否真能抽取/渲染出 html/视频需在宿主实机确认后反馈校准
 - 学习产物抽取已改为**按会话事件结构定点抽取**，不做全字段递归扫描：产物只来自 `tool/result` / `assistant/message` 事件的 `data.message.content`（file/image 内容块）与 `tool/result.data.meta`（工具私有描述，宽容匹配 filename/path/url/html）。**注意 `SessionEvent` 结构是 `{ type, seq, time, data: {...} }`，产物在 `data.message` / `data.meta`，不在事件顶层**——曾误读顶层导致一直抽不到产物。
+- **视频产物的真实形态（实测 session dump 确认）**：视频**不是** URL 也不是 file/image 内容块，而是通过两种方式引用宿主工作区绝对路径（如 `/home/sangfor/.../ComplexEquation.mp4`）：
+  1. `assistant/message.message.content` 中 `{type:"text", text:"![复数方程讲解视频](</home/.../ComplexEquation.mp4>)"}`——**markdown 图片语法引用视频路径**，必须用 `markdownRefsFrom()` 解析 `!\[alt\]\(<path>\)` 才能拿到；
+  2. `tool/call`（含 `assistant/message` 内的长度为 type：tool-call）的 `data.arguments` 是 JSON 字符串 `{"path": "/home/...mp4"}`，解析后命中 `path`。
+  `tool/result.message.content` 只有 `"Registered xxx.mp4 (N bytes) for IM delivery..."` 文本，**不含路径**——不能从 result 拿视频。
+- 宿主产物是**工作区绝对路径而非浏览器 URL，不能直接 `<video src>`/iframe 内联**：非 `http` 开头的一律只记 `path`，渲染为「在会话中打开」跳转卡片，用 `ctx.uiWorkspace?.openSession?.(sessionId)` 跳到宿主对应会话。
 - 产物渲染优先走**附件服务**：`tool/result.message.content` 里 file/image 块的 `attachment`（`FileAttachmentRef`/`ImageAttachmentRef`）只有 `attachmentId`（内容寻址 id，**不是文件路径也不是 bearer URL**）+ `name`。通过 `SessionFace.readAttachment(attachmentId)` 读取字节，转成 blob URL 再渲染（video/image/html/file）。MIME 从附件 `mediaType`（image 有）或文件名扩展名推断。
 - 宿主提供鉴权 `/api/file` 读端点，但真实参数名待实机确认。`path` 型产物仅定位（不直连渲染）。
 - `sub_id`（`7aa83122`）创建后不可修改
+- **远祖先遍历心智（防再次误扫）**：产物抽取仅允许走白名单路径 `data.message.content`（content blocks）与 `data.meta`；对字符串文本块的递归只查 `markdown 图片引用` + `内含 url/html/path/filename/name 的 JSON`。绝不递归整个 event 对象——曾把 `preset/mode/policy/inbox/replayState` 等会话元数据误当成产物列出。
