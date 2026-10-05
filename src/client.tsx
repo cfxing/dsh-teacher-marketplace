@@ -623,7 +623,10 @@ function extractArtifacts(entries: readonly unknown[]): Artifact[] {
     const event = rec['event']
     if (event === null || typeof event !== 'object') continue
     const etype = (event as Record<string, unknown>)['type']
-    if (etype !== 'tool/result' && etype !== 'assistant/message') continue
+    // GenUI / HTML 产物经常在 tool/call 的参数里生成，随后由原生 renderer
+    // 直接渲染成页面；如果只监听 tool/result / assistant/message，就只能
+    // 看到“已渲染”的说明文本，抓不到真正的 HTML 源。
+    if (etype !== 'tool/call' && etype !== 'tool/result' && etype !== 'assistant/message') continue
     collectFromEvent(event, out)
   }
   return out
