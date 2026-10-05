@@ -1,23 +1,13 @@
 # 教师智能体市场：页面插件 + 两个教育类 Agent Preset。
+# 注意：本文件由 scripts/build-presets.mjs 从 src/presets/*.yml 自动生成，请勿手改。
 #
-# 注意：
-# - Agent Preset 在 Harness 0.2.x 中会在启动阶段 eager mount 定义。
-# - 不要把 dsh-wrong-question / dshmath-manim 这类宿主级插件再次挂进每个
-#   Preset，否则会重复创建数据库/HTTP/工具实例，并可能触发原生运行时崩溃。
-# - 这些基础能力由 web profile 宿主层统一加载；教师 Preset 只负责教师身份与教学提示。
-#
-# 基础能力：
+# 基础能力（由 web profile 宿主层统一加载，Preset 不重复挂载以避免 eager mount 重复实例化）：
 #   dsh-wrong-question
 #   dshmath-manim
-#
-# 教师 Preset：
-#   ai-math-teacher
-#   ai-physics-teacher
 
 - insert:
     - id: dsh-teacher-marketplace
       name: dsh-teacher-marketplace
-
     - id: preset-ai-math-teacher
       name: "@deepseek-ai/dsh-agent-preset"
       config:
@@ -42,7 +32,7 @@
                 回答新题时优先利用相关历史错题、学习漏洞、真实作答与复习状态。
 
                 【举一反三】
-                当学生要求“举一反三”“类似题”或“继续训练”时，直接进入递进式变式练习。
+                当学生要求"举一反三""类似题"或"继续训练"时，直接进入递进式变式练习。
                 一次先给一道题，让学生自己作答，再根据实际结果调整下一题。
                 逐步覆盖：同等级、数字变化、条件变化、逆向、推理、综合迁移。
 
@@ -53,7 +43,6 @@
 
                 【沟通】
                 全程使用学生能理解的中文，不暴露内部工具、Skill、数据库或实现细节。
-
     - id: preset-ai-physics-teacher
       name: "@deepseek-ai/dsh-agent-preset"
       config:
@@ -78,7 +67,7 @@
                 回答新题时优先利用相关历史错题、学习漏洞、真实作答与复习状态。
 
                 【举一反三】
-                当学生要求“举一反三”“类似题”或“继续训练”时，一次先给一道题。
+                当学生要求"举一反三""类似题"或"继续训练"时，一次先给一道题。
                 根据学生的真实作答逐步改变数字、条件、方向、提问方式和情境。
                 最终使用新的情境检查迁移，而不是只改数字。
 

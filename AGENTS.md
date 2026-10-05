@@ -10,8 +10,10 @@ UI 为「数学派 Shuxuepai」风格工作台（浅米白书架侧栏 + 纸白�
 ## 目录结构
 - `src/index.ts`：插件 Node 半端入口，**intentionally 无运行时行为**（`apply(_ctx)` 为空，仅占位）
 - `src/client.tsx` + `src/client.css`：注入 DeepSeek Harness 宿主客户端的教师市场 UI 渲染层（数学派工作台：市场 / 我的智能体 / 学习产物）
+- `src/presets/*.yml`：**每个 Agent Preset 一个文件**（`ai-math-teacher.yml`、`ai-physics-teacher.yml`），后续新增老师在此目录新建即可，无需手改大文件
+- `scripts/build-presets.mjs`：把 `src/presets/*.yml` 合并回 `cordis.patch.yml`（Harness 打包单文件契约，直接交付，故 **cordis.patch.yml 是生成产物、勿手改**）
 - `scripts/build-client.mjs`：把 client UI 打包进管理层
-- `cordis.patch.yml`：客户端 UI 与 Agent Preset 的组合配置清单（打包输入）
+- `cordis.patch.yml`：客户端 UI 与 Agent Preset 的组合配置清单（打包输入，由 build-presets 生成）
 - `DESIGN.md`：数学派视觉风格设计稿（配色 / 排版 / 动效 / 禁忌）
 
 ## 关键入口 / 核心模块
@@ -21,7 +23,7 @@ UI 为「数学派 Shuxuepai」风格工作台（浅米白书架侧栏 + 纸白�
 - 学习产物抽取：client 通过 `ctx.sessions.retain()` 订阅最活跃非 blank 会话的 `binding.eventSource`（`SessionEventWindow`），从 `entries[].event` 按 `SessionEvent.data` 结构**定点抽取**（见下方"常见问题和预防"）：识别 html / 视频 / 图片 / 文件；产物渲染 `ArtifactPreview`（html→srcdoc iframe、video/image/html/file→媒体或 iframe、附件走 `readAttachment` 转 blob URL、仅 path→路径卡片）。
 
 ## 运行与预览
-- 开发：`pnpm install` -> `pnpm build`（`tsc` + `build-client.mjs`）
+- 开发：`pnpm install` -> `pnpm build`（先合并 presets，再 `tsc` + `build-client.mjs`）
 - 类型检查：`pnpm typecheck`
 - **非预览型项目**：client UI 依赖 DeepSeek Harness 宿主运行，无独立可预览前端；`.coze` 中 `preview_enable = "disabled"`，无 `[dev]`、无 `.preview`
 - **不支持部署**：交付物是供宿主平台消费的 npm 插件库，node 半端无运行时行为，无 HTTP 服务/前端服务入口，Coze Deploy 无可支撑 profile，`.coze` 不写 `[deploy]`
