@@ -32,4 +32,5 @@ UI 为「数学派 Shuxuepai」风格工作台（浅米白书架侧栏 + 纸白�
 ## 常见问题和预防
 - Agent Preset 定义会 eager mount：教师 Preset 只放身份与教学行为提示，宿主级插件必须由 web profile 宿主层统一加载，避免重复实例化
 - 学习产物预览无法在本仓库本地验证（非预览型插件，产物数据在宿主运行时生成）：交付以 `pnpm build` + `pnpm typecheck` 通过为准，是否真能抽取/渲染出 html/视频需在宿主实机确认后反馈校准
+- 学习产物抽取已改为**按会话事件结构定点抽取**，不做全字段递归扫描：产物只来自 `tool/result` / `assistant/message` 事件的 `message.content`（file/image 内容块）与 `tool/result.meta`（工具私有描述，宽容匹配 filename/path/url/html）。`attachmen/id` 是内容寻址标识，不是可直连 URL。宿主提供鉴权 `/api/file` 读端点，但真实参数名待实机确认，产物渲染以 `url`/`html` 直连为准，`path` 型产物仅定位
 - `sub_id`（`7aa83122`）创建后不可修改

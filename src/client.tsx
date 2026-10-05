@@ -226,10 +226,15 @@ async function loadAvailablePresets(ctx: any): Promise<Set<string>> {
 /* ------------------------------------------------------------------ *
  * 学习产物识别
  *
- * 教师在工作区中生成的 html / 视频 / 图片 / 文件，会以会话事件的方式
- * 落在 Client 的 SessionEventWindow 里。这里对事件做防御式探测：
- * 只要事件数据里出现带可渲染地址或文件路径的可识别产物，就抽取出来。
- * 字段名与宿主真实的产物结构可能略有差异，需实机验证后按反馈校准。
+ * 会话事件窗口（SessionEventWindow.entries）里的每一项是
+ * SessionEventLikeEntry = { type:'event'|'transient', event: SessionEvent }。
+ * SessionEvent 是判别联合（type: 'tool/result' | 'assistant/message' | …）。
+ * 教师产物（html / 视频 / 图片 / 文件）主要出现在两类事件：
+ *   - tool/result.message.content —— file / image 内容块
+ *   - tool/result.meta          —— 工具私有的产物描述（常见 filename / path / url）
+ * 这里按事件 type 做定点抽取，不再递归扫描事件对象的任意字段，
+ * 避免把 turn / step / preset 等非产物字段误当成产物。
+ * meta 的具体字段名属工具私有，仍需按实机结果核对 nameOfFile / urlOfValue。
  * ------------------------------------------------------------------ */
 
 type ArtifactKind = 'html' | 'video' | 'image' | 'file'
@@ -254,165 +259,132 @@ function kindOfName(name: string): ArtifactKind {
   return 'file'
 }
 
-function urlCandidates(value: unknown): Array<string | undefined> {
-  const out: Array<string | undefined> = []
-  if (typeof value === 'string') {
-    if (/^(https?:|blob:|data:|file:|)[^:]*\/(.)+/i.test(value)) out.push(value)
-    return out
-  }
-  if (value !== null && typeof value === 'object') {
-    const rec = value as Record<string, unknown>
-    for (const key of ['url', 'src', 'href', 'uri', 'previewUrl', 'playUrl']) {
-      const v = rec[key]
-      if (typeof v === 'string' && v.trim() !== '') out.push(v)
+/** 从字符串里找出可能是"文件路径/文件名"的尾巴（去掉标点与杂讯）。 */
+function fileNameTail(value: string): string | undefined {
+  if (value.trim() === '') return undefined
+  const m = value.match(/([^/\\\s"'`(){}\[\],;:]*\.(?:html?|mp4|webm|mov|m4v|png|jpe?g|gif|webp|svg|pdf))(?:[)\]}])?$/i)
+  return m ? m[1] : undefined
+}
+
+/** 判断一个字符串是否真的可当 URL 用（避免把普通文本当链接）。 */
+function isUrlLike(value: string): boolean {
+  return /^(https?:|blob:|data:|file:)/i.test(value)
+}
+
+/** 从一个"可能的产物对象"里收集 id/文件名/路径。值精确对应 file/image 内容块。 */
+function collectContentBlocks(content: unknown, out: Artifact[]): void {
+  if (!Array.isArray(content)) return
+  for (const block of content) {
+    if (block === null || typeof block !== 'object') continue
+    const rec = block as Record<string, unknown>
+    if (rec['type'] === 'file' || rec['type'] === 'image') {
+      const att = rec['attachment']
+      const name = (att !== null && typeof att === 'object')
+        ? (att as Record<string, unknown>)['name']
+        : undefined
+      pushArtifact(out, {
+        kind: rec['type'] === 'image' ? 'image' : 'file',
+        title: typeof name === 'string' && name !== ''
+          ? name
+          : (rec['type'] === 'image' ? '图片产物' : '文件产物'),
+      })
     }
+  }
+}
+
+/** 从一个事件里取产物：只读明确字段，不递归整棵事件树。 */
+function collectFromEvent(event: unknown, out: Artifact[]): void {
+  if (event === null || typeof event !== 'object') return
+  const rec = event as Record<string, unknown>
+
+  const message = rec['message']
+  if (message !== null && typeof message === 'object') {
+    collectContentBlocks((message as Record<string, unknown>)['content'], out)
+    // html 片段可能直接作为字符串正文出现（assistant/message → text 块）。
+    const blocks = (message as Record<string, unknown>)['content']
+    if (Array.isArray(blocks)) {
+      for (const block of blocks) {
+        if (block === null || typeof block !== 'object') continue
+        const br = block as Record<string, unknown>
+        if (br['type'] === 'text' && typeof br['text'] === 'string') {
+          const body = htmlBodyFrom(br['text'])
+          if (body !== undefined) pushArtifact(out, { kind: 'html', title: '学习文档', html: body })
+        }
+      }
+    }
+  }
+
+  // tool/result.meta —— 工具私有描述，常见字段名做宽容匹配。
+  const meta = rec['meta']
+  if (meta !== null && typeof meta === 'object') {
+    collectFromMeta(meta as Record<string, unknown>, out)
+  }
+}
+
+/** 工具私有 meta 的宽容探测：只认明确的 filename/path/url/html 字段。 */
+function collectFromMeta(meta: Record<string, unknown>, out: Artifact[]): void {
+  const candidate = (value: unknown): void => {
+    if (typeof value !== 'string' || value.trim() === '') return
+    const body = htmlBodyFrom(value)
+    if (body !== undefined) {
+      pushArtifact(out, { kind: 'html', title: '学习文档', html: body })
+      return
+    }
+    if (isUrlLike(value)) {
+      pushArtifact(out, { kind: kindOfName(value), title: fileNameTail(value) ?? '学习资源', url: value })
+      return
+    }
+    const tail = fileNameTail(value)
+    if (tail !== undefined) {
+      pushArtifact(out, {
+        kind: kindOfName(tail),
+        title: decodeURIComponent(tail),
+        // 有明确 /api/file 鉴权读端点时，把会话内相对路径扩成可预览 URL。
+        path: value,
+      })
+    }
+  }
+
+  for (const key of ['url', 'src', 'href', 'uri', 'previewUrl', 'playUrl', 'file', 'filename', 'name', 'path']) {
+    const v = meta[key]
+    if (v === undefined) continue
+    if (typeof v === 'string') candidate(v)
+    else if (Array.isArray(v)) for (const item of v) candidate(item)
+    else if (v !== null && typeof v === 'object') {
+      for (const k of ['url', 'path', 'name', 'filename', 'html']) {
+        const inner = (v as Record<string, unknown>)[k]
+        if (typeof inner === 'string') candidate(inner)
+      }
+    }
+  }
+}
+
+function pushArtifact(out: Artifact[], art: Omit<Artifact, 'id'>): void {
+  const key = art.url ?? art.html ?? art.path ?? art.title
+  if (out.some(existing => (existing.url ?? existing.html ?? existing.path ?? existing.title) === key)) return
+  out.push({ id: `art-${out.length}`, ...art })
+}
+
+function extractArtifacts(entries: readonly unknown[]): Artifact[] {
+  const out: Artifact[] = []
+  for (const entry of entries) {
+    if (entry === null || typeof entry !== 'object') continue
+    const rec = entry as Record<string, unknown>
+    if (rec['type'] !== 'event') continue // 过滤掉 'transient' 直播帧
+    const event = rec['event']
+    if (event === null || typeof event !== 'object') continue
+    const etype = (event as Record<string, unknown>)['type']
+    if (etype !== 'tool/result' && etype !== 'assistant/message') continue
+    collectFromEvent(event, out)
   }
   return out
 }
 
-function nameCandidates(value: unknown): string | undefined {
-  if (typeof value === 'string') return value
-  if (value !== null && typeof value === 'object') {
-    const rec = value as Record<string, unknown>
-    for (const key of ['name', 'title', 'fileName', 'filename', 'path']) {
-      const v = rec[key]
-      if (typeof v === 'string' && v.trim() !== '') return v
-    }
-    const path = rec['path']
-    if (typeof path === 'string') return path
-  }
-  return undefined
-}
-
+/** 从一段文本里识别 html 文档片段。 */
 function htmlBodyFrom(value: unknown): string | undefined {
-  if (typeof value === 'string' && /^\s*<(!doctype|html)/i.test(value)) return value
-  if (value !== null && typeof value === 'object') {
-    const rec = value as Record<string, unknown>
-    for (const key of ['html', 'content', 'code', 'body']) {
-      const v = rec[key]
-      if (typeof v === 'string' && /<(!doctype|html|body|div)/i.test(v)) return v
-    }
-  }
+  if (typeof value !== 'string') return undefined
+  if (/^\s*<(!doctype|html|body|div|svg)/i.test(value)) return value
   return undefined
-}
-
-/** 递归扫描一个对象的叶子值，找出所有可能代表一个"产物"的对象节点。 */
-function collectArtifactNodes(node: unknown, depth: number, seen: Set<object>, out: unknown[]): void {
-  if (depth > 6 || node === null || node === undefined) return
-  if (typeof node !== 'object') return
-  if (typeof (node as object) === 'object' && (node as object) !== null) {
-    if (seen.has(node as object)) return
-    seen.add(node as object)
-  }
-
-  const rec = node as Record<string, unknown>
-  const name = nameCandidates(rec)
-  const hasUrl = urlCandidates(rec).some(Boolean)
-
-  if ((name !== undefined && hasUrl) || htmlBodyFrom(rec) !== undefined || hasUrl) {
-    out.push(node)
-    return
-  }
-
-  for (const value of Object.values(rec)) {
-    if (typeof value === 'object' && value !== null) {
-      collectArtifactNodes(value, depth + 1, seen, out)
-    }
-  }
-}
-
-function extractArtifacts(events: readonly unknown[]): Artifact[] {
-  const nodes: unknown[] = []
-  const seen = new Set<object>()
-  const bodies: string[] = []
-  const urls: string[] = []
-  const paths: string[] = []
-
-  const scanValue = (value: unknown): void => {
-    if (typeof value === 'string') {
-      const body = htmlBodyFrom(value)
-      if (body !== undefined) bodies.push(body)
-      else {
-        const t = (value.trim().match(/\S+$/) ?? [''])[0]
-        if (t.startsWith('/') || t.includes('/')) paths.push(value)
-      }
-      return
-    }
-    collectArtifactNodes(value, 0, seen, nodes)
-  }
-
-  for (const entry of events as Array<Record<string, unknown>>) {
-    const event = deepField(entry, 'event') ?? entry
-    if (event === null || typeof event !== 'object') continue
-    const data = deepField(event, 'data')
-    if (data !== undefined) scanValue(data)
-    for (const value of Object.values(event)) {
-      if (value !== data) scanValue(value)
-    }
-  }
-
-  for (const node of nodes) {
-    const rec = node as Record<string, unknown>
-    const path = typeof rec['path'] === 'string' ? rec['path'] : undefined
-    const name = nameCandidates(rec) ?? path ?? '学习产物'
-    if (path) paths.push(path)
-    for (const u of urlCandidates(rec)) if (u) urls.push(u)
-    const body = htmlBodyFrom(rec)
-    if (body) bodies.push(body)
-  }
-
-  const artifacts: Artifact[] = []
-  let serial = 0
-
-  for (const body of bodies) {
-    const le = body.length
-    artifacts.push({
-      id: `html-${serial++}`,
-      kind: 'html',
-      title: `学习文档 ${artifacts.length + 1}`,
-      html: body,
-    })
-    void le
-  }
-
-  for (const u of urls) {
-    const name = u.split(/[\\/]/).pop() ?? ''
-    artifacts.push({
-      id: `url-${serial++}`,
-      kind: kindOfName(name),
-      title: name ? decodeURIComponent(name) : `资源 ${artifacts.length + 1}`,
-      url: u,
-    })
-  }
-
-  for (const p of paths) {
-    const name = p.split(/[\\/]/).pop() ?? p
-    artifacts.push({
-      id: `path-${serial++}`,
-      kind: kindOfName(name),
-      title: name ? decodeURIComponent(name) : `文件 ${artifacts.length + 1}`,
-      path: p,
-    })
-  }
-
-  // 去重并过滤掉明显是纯文本的工具输出。
-  const unique = new Map<string, Artifact>()
-  for (const art of artifacts) {
-    const key = art.url ?? art.html ?? art.path ?? art.id
-    if (!unique.has(key)) unique.set(key, art)
-  }
-  return [...unique.values()].filter(art => art.url !== undefined || art.html !== undefined || art.path !== undefined)
-}
-
-/** 在嵌套对象里按 `.` 路径读字段（用于取 `event.data` 等）。 */
-function deepField(root: unknown, keyPath: string): unknown {
-  const parts = keyPath.split('.')
-  let cur: unknown = root
-  for (const part of parts) {
-    if (cur === null || cur === undefined || typeof cur !== 'object') return undefined
-    cur = (cur as Record<string, unknown>)[part]
-  }
-  return cur
 }
 
 function TeacherMarketplace({ ctx, initialView, close }: {
