@@ -249,6 +249,8 @@ type Artifact = {
   path?: string
   /** html 型产物若直接携带代码片段，则用 srcdoc 渲染。 */
   html?: string
+  /** 附件服务托管的字节引用 id；通过 SessionFace.readAttachment 读取渲染。 */
+  attachmentId?: string
 }
 
 function kindOfName(name: string): ArtifactKind {
@@ -282,22 +284,36 @@ function collectContentBlocks(content: unknown, out: Artifact[]): void {
       const name = (att !== null && typeof att === 'object')
         ? (att as Record<string, unknown>)['name']
         : undefined
-      pushArtifact(out, {
-        kind: rec['type'] === 'image' ? 'image' : 'file',
-        title: typeof name === 'string' && name !== ''
-          ? name
-          : (rec['type'] === 'image' ? '图片产物' : '文件产物'),
-      })
+      const attachmentId = (att !== null && typeof att === 'object')
+        ? (att as Record<string, unknown>)['attachmentId']
+        : undefined
+      const title = typeof name === 'string' && name !== ''
+        ? name
+        : (rec['type'] === 'image' ? '图片产物' : '文件产物')
+      const next: Omit<Artifact, 'id'> = {
+        kind: rec['type'] === 'image' ? 'image' : kindOfName(title),
+        title,
+      }
+      if (typeof attachmentId === 'string') next.attachmentId = attachmentId
+      pushArtifact(out, next)
     }
   }
 }
 
-/** 从一个事件里取产物：只读明确字段，不递归整棵事件树。 */
+/**
+ * 从一个事件里取产物：只读明确的 data 字段，不递归整棵事件树。
+ * SessionEvent 结构：{ type, seq, time, data: { turn, step, message, meta? } }。
+ * 产物信息在 data.message.content（file/image/text 内容块）与
+ * data.meta（工具私有的产物描述）。旧版误读 event.message 顶层，现改为 data.*。
+ */
 function collectFromEvent(event: unknown, out: Artifact[]): void {
   if (event === null || typeof event !== 'object') return
   const rec = event as Record<string, unknown>
+  const data = rec['data']
 
-  const message = rec['message']
+  const message = (data !== null && typeof data === 'object')
+    ? (data as Record<string, unknown>)['message']
+    : undefined
   if (message !== null && typeof message === 'object') {
     collectContentBlocks((message as Record<string, unknown>)['content'], out)
     // html 片段可能直接作为字符串正文出现（assistant/message → text 块）。
@@ -314,8 +330,10 @@ function collectFromEvent(event: unknown, out: Artifact[]): void {
     }
   }
 
-  // tool/result.meta —— 工具私有描述，常见字段名做宽容匹配。
-  const meta = rec['meta']
+  // tool/result.data.meta —— 工具私有描述，常见字段名做宽容匹配。
+  const meta = (data !== null && typeof data === 'object')
+    ? (data as Record<string, unknown>)['meta']
+    : undefined
   if (meta !== null && typeof meta === 'object') {
     collectFromMeta(meta as Record<string, unknown>, out)
   }
@@ -360,8 +378,8 @@ function collectFromMeta(meta: Record<string, unknown>, out: Artifact[]): void {
 }
 
 function pushArtifact(out: Artifact[], art: Omit<Artifact, 'id'>): void {
-  const key = art.url ?? art.html ?? art.path ?? art.title
-  if (out.some(existing => (existing.url ?? existing.html ?? existing.path ?? existing.title) === key)) return
+  const key = art.url ?? art.html ?? art.path ?? art.attachmentId ?? art.title
+  if (out.some(existing => (existing.url ?? existing.html ?? existing.path ?? existing.attachmentId ?? existing.title) === key)) return
   out.push({ id: `art-${out.length}`, ...art })
 }
 
@@ -403,6 +421,8 @@ function TeacherMarketplace({ ctx, initialView, close }: {
   // 学习产物：订阅当前保留会话的事件窗口，抽取工具生成的内容。
   const [activeArtifacts, setActiveArtifacts] = useState<Artifact[]>([])
   const [activeTab, setActiveTab] = useState<Artifact | null>(null)
+  // 当前保留会话的 SessionFace，用于 readAttachment 读取附件字节渲染。
+  const [activeSession, setActiveSession] = useState<any>(null)
 
   useEffect(() => {
     let alive = true
@@ -429,6 +449,7 @@ function TeacherMarketplace({ ctx, initialView, close }: {
     if (live === undefined || typeof live.id !== 'string') return
 
     const ref = sessions.retain(live.id, { source: 'controllerOperation' })
+    setActiveSession(ref.binding?.session ?? null)
     let sub: (() => void) | undefined
     let cancelled = false
 
@@ -583,7 +604,7 @@ function TeacherMarketplace({ ctx, initialView, close }: {
               <span>从左侧选择一项产物预览</span>
             </div>
           ) : (
-            <ArtifactPreview artifact={active} key={active.id} />
+            <ArtifactPreview artifact={active} session={activeSession} key={active.id} />
           )}
         </section>
       </div>
@@ -716,7 +737,11 @@ function kindGlyph(kind: ArtifactKind): string {
   }
 }
 
-function ArtifactPreview({ artifact }: { artifact: Artifact }): React.ReactElement {
+function ArtifactPreview({ artifact, session }: { artifact: Artifact; session: any }): React.ReactElement {
+  const objectUrl = useAttachmentObjectUrl(session, artifact)
+  const url = objectUrl ?? artifact.url
+  const useObjectUrl = objectUrl !== undefined && artifact.url === undefined
+
   if (artifact.html !== undefined) {
     return (
       <iframe
@@ -727,14 +752,26 @@ function ArtifactPreview({ artifact }: { artifact: Artifact }): React.ReactEleme
       />
     )
   }
-  if (artifact.kind === 'video' && artifact.url !== undefined) {
-    return <video className="dsh-artifact-media" src={artifact.url} controls autoPlay muted />
+  if ((artifact.kind === 'video') && url !== undefined) {
+    return <video className="dsh-artifact-media" src={url} controls autoPlay muted />
   }
-  if (artifact.kind === 'image' && artifact.url !== undefined) {
-    return <img className="dsh-artifact-media" src={artifact.url} alt={artifact.title} />
+  if ((artifact.kind === 'image') && url !== undefined) {
+    return <img className="dsh-artifact-media" src={url} alt={artifact.title} />
   }
-  if (artifact.url !== undefined) {
-    return <iframe className="dsh-artifact-frame" title={artifact.title} src={artifact.url} sandbox="allow-scripts allow-same-origin" />
+  if ((artifact.kind === 'html' || artifact.kind === 'file') && url !== undefined) {
+    return <iframe className="dsh-artifact-frame" title={artifact.title} src={url} sandbox="allow-scripts allow-same-origin" />
+  }
+  if (url !== undefined && !useObjectUrl) {
+    return <iframe className="dsh-artifact-frame" title={artifact.title} src={url} sandbox="allow-scripts allow-same-origin" />
+  }
+  if (artifact.attachmentId !== undefined && url === undefined) {
+    return (
+      <div className="dsh-artifact-path">
+        <div className="dsh-teacher-empty-icon">〙</div>
+        <h2>{artifact.title}</h2>
+        <span className="dsh-artifact-note">附件读取中或不可在此预览，请在会话中打开查看。</span>
+      </div>
+    )
   }
   if (artifact.path !== undefined) {
     return (
@@ -751,4 +788,64 @@ function ArtifactPreview({ artifact }: { artifact: Artifact }): React.ReactEleme
       <span>无法预览此产物</span>
     </div>
   )
+}
+
+/** 通过 SessionFace.readAttachment(attachmentId) 把附件字节转成 blob URL，供预览渲染。 */
+function useAttachmentObjectUrl(session: any, artifact: Artifact): string | undefined {
+  const attachmentId = artifact.attachmentId
+  const [url, setUrl] = useState<string | undefined>(undefined)
+
+  useEffect(() => {
+    if (attachmentId === undefined) {
+      setUrl(undefined)
+      return
+    }
+    if (!session || typeof session.readAttachment !== 'function') {
+      setUrl(undefined)
+      return
+    }
+    let alive = true
+    let objectUrl: string | undefined
+    session
+      .readAttachment(attachmentId)
+      .then((result: any) => {
+        if (!alive || !result?.ok) return
+        const data = result.value?.data
+        if (!(data instanceof Uint8Array) && !(data instanceof ArrayBuffer)) return
+        const bytes = data instanceof ArrayBuffer ? data : data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength)
+        const mediaType = result.value?.attachment?.mediaType
+        const type = typeof mediaType === 'string' && mediaType !== ''
+          ? mediaType
+          : mediaTypeOfName(artifact.title)
+        const blob = new Blob([bytes as ArrayBuffer], { type })
+        objectUrl = URL.createObjectURL(blob)
+        if (alive) setUrl(objectUrl)
+      })
+      .catch(() => {
+        if (alive) setUrl(undefined)
+      })
+    return () => {
+      alive = false
+      if (objectUrl !== undefined) URL.revokeObjectURL(objectUrl)
+    }
+  }, [session, artifact.attachmentId, artifact.title])
+
+  return url
+}
+
+/** 从文件名扩展名推断一个可播放/可内嵌的 MIME（附件 FileAttachmentRef 不带 mediaType）。 */
+function mediaTypeOfName(name: string): string {
+  const lower = name.toLowerCase()
+  if (lower.endsWith('.mp4')) return 'video/mp4'
+  if (lower.endsWith('.webm')) return 'video/webm'
+  if (lower.endsWith('.mov')) return 'video/quicktime'
+  if (lower.endsWith('.m4v')) return 'video/x-m4v'
+  if (lower.endsWith('.png')) return 'image/png'
+  if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg'
+  if (lower.endsWith('.gif')) return 'image/gif'
+  if (lower.endsWith('.webp')) return 'image/webp'
+  if (lower.endsWith('.svg')) return 'image/svg+xml'
+  if (lower.endsWith('.html') || lower.endsWith('.htm')) return 'text/html'
+  if (lower.endsWith('.pdf')) return 'application/pdf'
+  return 'application/octet-stream'
 }

@@ -18,7 +18,7 @@ UI 为「数学派 Shuxuepai」风格工作台（浅米白书架侧栏 + 纸白�
 - 插件名 `dsh-teacher-marketplace`，`inject: []`；客户端注入点：`sidebar.footer.action`（智能体入口）+ `main`（工作台面板，3 个视图：market / mine / artifacts）
 - 两个 Agent Preset：`ai-math-teacher`、`ai-physics-teacher`（只负责教师人格与教学策略，**不重复挂载** `dsh-wrong-question`、`dshmath-manim` 等宿主级插件，避免 Harness 0.2.x eager mount 导致 DB/路由/工具多份创建）
 - 宿主级插件（`dsh-wrong-question`、`dshmath-manim`）由 web profile 宿主层统一加载
-- 学习产物抽取：client 通过 `ctx.sessions.retain()` 订阅最活跃非 blank 会话的 `binding.eventSource`（`SessionEventWindow`），对窗口 entries 做**防御式探测**（不做字段名强假设），识别 html / 视频 / 图片 / 文件；产物渲染 `ArtifactPreview`（html→srcdoc iframe、video/image/url→媒体、仅 path→路径卡片）。**产物数据字段结构未在宿主实机验证，需按真实事件结构校准 `extractArtifacts` / `urlCandidates` / `htmlBodyFrom`**
+- 学习产物抽取：client 通过 `ctx.sessions.retain()` 订阅最活跃非 blank 会话的 `binding.eventSource`（`SessionEventWindow`），从 `entries[].event` 按 `SessionEvent.data` 结构**定点抽取**（见下方"常见问题和预防"）：识别 html / 视频 / 图片 / 文件；产物渲染 `ArtifactPreview`（html→srcdoc iframe、video/image/html/file→媒体或 iframe、附件走 `readAttachment` 转 blob URL、仅 path→路径卡片）。
 
 ## 运行与预览
 - 开发：`pnpm install` -> `pnpm build`（`tsc` + `build-client.mjs`）
@@ -32,5 +32,7 @@ UI 为「数学派 Shuxuepai」风格工作台（浅米白书架侧栏 + 纸白�
 ## 常见问题和预防
 - Agent Preset 定义会 eager mount：教师 Preset 只放身份与教学行为提示，宿主级插件必须由 web profile 宿主层统一加载，避免重复实例化
 - 学习产物预览无法在本仓库本地验证（非预览型插件，产物数据在宿主运行时生成）：交付以 `pnpm build` + `pnpm typecheck` 通过为准，是否真能抽取/渲染出 html/视频需在宿主实机确认后反馈校准
-- 学习产物抽取已改为**按会话事件结构定点抽取**，不做全字段递归扫描：产物只来自 `tool/result` / `assistant/message` 事件的 `message.content`（file/image 内容块）与 `tool/result.meta`（工具私有描述，宽容匹配 filename/path/url/html）。`attachmen/id` 是内容寻址标识，不是可直连 URL。宿主提供鉴权 `/api/file` 读端点，但真实参数名待实机确认，产物渲染以 `url`/`html` 直连为准，`path` 型产物仅定位
+- 学习产物抽取已改为**按会话事件结构定点抽取**，不做全字段递归扫描：产物只来自 `tool/result` / `assistant/message` 事件的 `data.message.content`（file/image 内容块）与 `tool/result.data.meta`（工具私有描述，宽容匹配 filename/path/url/html）。**注意 `SessionEvent` 结构是 `{ type, seq, time, data: {...} }`，产物在 `data.message` / `data.meta`，不在事件顶层**——曾误读顶层导致一直抽不到产物。
+- 产物渲染优先走**附件服务**：`tool/result.message.content` 里 file/image 块的 `attachment`（`FileAttachmentRef`/`ImageAttachmentRef`）只有 `attachmentId`（内容寻址 id，**不是文件路径也不是 bearer URL**）+ `name`。通过 `SessionFace.readAttachment(attachmentId)` 读取字节，转成 blob URL 再渲染（video/image/html/file）。MIME 从附件 `mediaType`（image 有）或文件名扩展名推断。
+- 宿主提供鉴权 `/api/file` 读端点，但真实参数名待实机确认。`path` 型产物仅定位（不直连渲染）。
 - `sub_id`（`7aa83122`）创建后不可修改
