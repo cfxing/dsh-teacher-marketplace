@@ -42,6 +42,6 @@ UI 为「数学派 Shuxuepai」风格工作台（浅米白书架侧栏 + 纸白�
   `tool/result.message.content` 只有 `"Registered xxx.mp4 (N bytes) for IM delivery..."` 文本，**不含路径**——不能从 result 拿视频。
 - 宿主产物是**工作区绝对路径而非浏览器 URL，不能直接 `<video src>`/iframe 内联**：非 `http` 开头的一律只记 `path`，渲染为「在会话中打开」跳转卡片，用 `ctx.uiWorkspace?.openSession?.(sessionId)` 跳到宿主对应会话。
 - 产物渲染优先走**附件服务**：`tool/result.message.content` 里 file/image 块的 `attachment`（`FileAttachmentRef`/`ImageAttachmentRef`）只有 `attachmentId`（内容寻址 id，**不是文件路径也不是 bearer URL**）+ `name`。通过 `SessionFace.readAttachment(attachmentId)` 读取字节，转成 blob URL 再渲染（video/image/html/file）。MIME 从附件 `mediaType`（image 有）或文件名扩展名推断。
-- 宿主提供鉴权 `/api/file` 读端点，但真实参数名待实机确认。`path` 型产物仅定位（不直连渲染）。
+- **宿主提供鉴权 `/api/file` 读端点（`SessionMediaReferences`，见 `dsh-api-session-controller/lib/types/media-references.js`）**：`GET/HEAD /api/file?path=<工作区绝对路径>`，经 `ctx.fs` 读取并返回带正确 Content-Type 的字节流，`paths and MIME types do not restrict access`。因此视频/图片/HTML 这类以**工作区绝对路径**引用的产物，本端可用 `useWorkspaceFileObjectUrl(path)` 直接 `fetch(/api/file?path=...)` 转 blob URL **内联播放**（不再只退化为跳转卡片）；fetch 失败才走「在会话中打开」兜底跳转。曾用 session 内相对路径/本地路径误当浏览器 URL 直连渲染，白丢失内联能力。
 - `sub_id`（`7aa83122`）创建后不可修改
 - **远祖先遍历心智（防再次误扫）**：产物抽取仅允许走白名单路径 `data.message.content`（content blocks）与 `data.meta`；对字符串文本块的递归只查 `markdown 图片引用` + `内含 url/html/path/filename/name 的 JSON`。绝不递归整个 event 对象——曾把 `preset/mode/policy/inbox/replayState` 等会话元数据误当成产物列出。

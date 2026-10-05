@@ -1027,8 +1027,9 @@ function ArtifactPreview({ artifact, session, onOpenInSession }: {
   onOpenInSession?: () => void
 }): React.ReactElement {
   const objectUrl = useAttachmentObjectUrl(session, artifact)
-  const url = objectUrl ?? artifact.url
-  const useObjectUrl = objectUrl !== undefined && artifact.url === undefined
+  const workspaceUrl = useWorkspaceFileObjectUrl(artifact.path)
+  const url = objectUrl ?? workspaceUrl ?? artifact.url
+  const useObjectUrl = (objectUrl ?? workspaceUrl) !== undefined && artifact.url === undefined
   const jump = (): void => { onOpenInSession?.() }
 
   if (artifact.html !== undefined) {
@@ -1071,7 +1072,7 @@ function ArtifactPreview({ artifact, session, onOpenInSession }: {
         <div className="dsh-teacher-empty-icon">〙</div>
         <h2>已定位产物文件</h2>
         <p>{artifact.path}</p>
-        <span className="dsh-artifact-note">该文件为宿主工作区文件，无法在当前面板内联播放，可跳转到会话中打开查看。</span>
+        <span className="dsh-artifact-note">该文件为宿主工作区文件，读取失败或暂不可预览，可跳转到会话中打开查看。</span>
         {onOpenInSession !== undefined && (
           <button className="dsh-teacher-primary" onClick={jump}>在会话中打开</button>
         )}
@@ -1127,6 +1128,44 @@ function useAttachmentObjectUrl(session: any, artifact: Artifact): string | unde
       if (objectUrl !== undefined) URL.revokeObjectURL(objectUrl)
     }
   }, [session, artifact.attachmentId, artifact.title])
+
+  return url
+}
+
+/** 通过宿主的鉴权读端点 GET /api/file?path=<绝对路径> 把工作区文件读成 blob URL。
+ *  视频/图片/HTML 这类产物在会话里以绝对路径引用，宿主的 SessionMediaReferences
+ *  注册了 /api/file 处理这些路径的字节读取，本端拉取后即可内联播放。 */
+function useWorkspaceFileObjectUrl(path: string | undefined): string | undefined {
+  const [url, setUrl] = useState<string | undefined>(undefined)
+
+  useEffect(() => {
+    if (path === undefined || path === '') {
+      setUrl(undefined)
+      return
+    }
+    let alive = true
+    let objectUrl: string | undefined
+    let controller = new AbortController()
+    void (async () => {
+      try {
+        const res = await fetch(`/api/file?path=${encodeURIComponent(path)}`, {
+          signal: controller.signal,
+        })
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        const blob = await res.blob()
+        if (!alive) return
+        objectUrl = URL.createObjectURL(blob)
+        if (alive) setUrl(objectUrl)
+      } catch {
+        if (alive) setUrl(undefined)
+      }
+    })()
+    return () => {
+      alive = false
+      controller.abort()
+      if (objectUrl !== undefined) URL.revokeObjectURL(objectUrl)
+    }
+  }, [path])
 
   return url
 }
