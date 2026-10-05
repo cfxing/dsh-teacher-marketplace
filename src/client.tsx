@@ -325,7 +325,8 @@ class ArtifactManager {
 
       const sync = (): void => {
         try {
-          const window = ref.binding?.eventSource?.getSnapshot?.()
+          const source = ref.binding?.session?.eventSource ?? ref.binding?.eventSource
+          const window = source?.getSnapshot?.()
           const entries = window?.entries ?? []
           const artifacts = extractArtifacts(entries)
           this.snapshotValue = {
@@ -342,7 +343,6 @@ class ArtifactManager {
 
       // 当前版本的公开 ClientSession 直接暴露 eventSource；部分旧运行时
       // retain() 返回的 binding 也暴露同一个 source，因此两者兼容。
-      const source = ref.binding?.session?.eventSource ?? ref.binding?.eventSource
       if (source && typeof source.subscribe === 'function') {
         this.unsubscribe = source.subscribe(sync)
       }
@@ -717,7 +717,6 @@ function TeacherMarketplace({ ctx, artifactManager, initialView, close }: {
       <aside className="dsh-teacher-rail">
         <div className="dsh-teacher-rail-head">
           <span className="dsh-teacher-rail-brand">学习工作台</span>
-          <button className="dsh-teacher-new" onClick={() => setView('market')}>＋ 新建学习</button>
         </div>
         <nav className="dsh-teacher-rail-nav" aria-label="学习工作台导航">
           <div className="dsh-teacher-rail-group">学习</div>
