@@ -25,6 +25,7 @@ const presetList = presetContents.join('\n')
 // yml 顶层是 "- id: xxx ..." 的文档列表；直接拼在 header 的 "- insert:" 列表下。
 // 每个 preset 文件内缩进 2 格，插入后整体再缩进 4 格对齐 "- insert:" 的子项。
 const body = presetList
+  .trimEnd()
   .split('\n')
   .map(line => (line === '' ? '' : '    ' + line))
   .join('\n')

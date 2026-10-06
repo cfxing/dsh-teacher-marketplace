@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import type { Context } from '@deepseek-ai/cordis'
 import clientCss from './client.css'
 
@@ -482,9 +482,11 @@ function isUrlLike(value: string): boolean {
 /** 提取文本里的 markdown 引用，兼容图片 ![alt](<path>) 与普通链接 [alt](<path>)，
  *  用于识别贴在回复里生成的视频/图片/文件。 */
 function markdownRefsFrom(text: string): Array<{ alt: string; url: string }> {
-  return Array.from(text.matchAll(/!?\[([^\]]*?)\]\(<([^<>\s]+)>\)/g)).map(m => ({
+  // 生成器既会输出 [视频](<绝对路径>)，也会输出 [视频](绝对路径)。
+  // 后者不能只按“图片语法”解析，否则 tool/call 已生成的视频不会进入产物列表。
+  return Array.from(text.matchAll(/!?\[([^\]]*?)\]\(\s*(?:<([^<>]+)>|([^)]*?))\s*\)/g)).map(m => ({
     alt: m[1] ?? '',
-    url: m[2]?.trim() ?? '',
+    url: (m[2] ?? m[3] ?? '').trim(),
   }))
 }
 
@@ -1043,7 +1045,7 @@ function ArtifactPreview({ artifact, session, onOpenInSession }: {
     )
   }
   if ((artifact.kind === 'video') && url !== undefined) {
-    return <video className="dsh-artifact-media" src={url} controls autoPlay muted />
+    return <VideoArtifactPlayer artifact={artifact} url={url} />
   }
   if ((artifact.kind === 'image') && url !== undefined) {
     return <img className="dsh-artifact-media" src={url} alt={artifact.title} />
@@ -1085,6 +1087,53 @@ function ArtifactPreview({ artifact, session, onOpenInSession }: {
       {onOpenInSession !== undefined && (
         <button className="dsh-teacher-primary" onClick={jump}>在会话中打开</button>
       )}
+    </div>
+  )
+}
+
+/** 视频产物优先在工作台内播放，并提供浏览器原生画中画入口。 */
+function VideoArtifactPlayer({ artifact, url }: { artifact: Artifact; url: string }): React.ReactElement {
+  const videoRef = useRef<HTMLVideoElement | null>(null)
+  const [pipError, setPipError] = useState('')
+
+  const togglePictureInPicture = async (): Promise<void> => {
+    const video = videoRef.current as (HTMLVideoElement & {
+      requestPictureInPicture?: () => Promise<unknown>
+    }) | null
+    if (video === null) return
+    setPipError('')
+    try {
+      if (document.pictureInPictureElement === video) {
+        await document.exitPictureInPicture()
+      } else if (typeof video.requestPictureInPicture === 'function') {
+        await video.requestPictureInPicture()
+      } else {
+        setPipError('当前宿主不支持画中画，请使用播放器底部控件播放。')
+      }
+    } catch {
+      setPipError('画中画暂时不可用，请先点击播放后再试。')
+    }
+  }
+
+  return (
+    <div className="dsh-artifact-video-shell">
+      <video
+        ref={videoRef}
+        className="dsh-artifact-media"
+        src={url}
+        controls
+        autoPlay
+        muted
+        playsInline
+        preload="metadata"
+        aria-label={artifact.title}
+      />
+      <div className="dsh-artifact-video-actions">
+        <button type="button" className="dsh-teacher-secondary" onClick={() => { void togglePictureInPicture() }}>
+          ⛶ 画中画播放
+        </button>
+        {pipError !== '' && <span className="dsh-artifact-note">{pipError}</span>}
+      </div>
     </div>
   )
 }
