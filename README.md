@@ -10,6 +10,7 @@
 
 用户不需要理解 Agent、Skill、插件或 Manim。进入「智能体」后直接看到教师卡片：
 
+- AI学习老师
 - AI 数学老师
 - AI 物理老师
 
@@ -17,10 +18,12 @@
 
 ## Preset 设计
 
-本插件提供两个 Agent Preset：
+本插件提供三个新版 Agent Preset，并保留一个旧会话兼容 Preset：
 
+- `ai-teacher`
 - `ai-math-teacher`
 - `ai-physics-teacher`
+- `study-tutor`（旧会话兼容，不在市场中重复展示）
 
 Preset **只负责教师身份与教学行为提示**。不要把 `dsh-wrong-question`、`dshmath-manim` 等宿主级插件重复挂到每个 Preset。
 

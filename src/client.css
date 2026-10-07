@@ -491,3 +491,62 @@
 }
 .dsh-artifact-path h2 { margin: 0; font-size: 17px; font-weight: 600; color: #1f2937; }
 .dsh-artifact-note { font-size: 12px; color: #9ca3af; }
+
+/* ---------- 聊天消息中的 MP4 小窗 ---------- */
+.dsh-video-link-backdrop {
+  position: fixed;
+  z-index: 10000;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgb(20 28 38 / 42%);
+}
+.dsh-video-link-window {
+  width: min(720px, 92vw);
+  max-height: min(620px, 90vh);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid #d9d4c9;
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 18px 48px rgb(31 41 55 / 26%);
+}
+.dsh-video-link-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 14px;
+  color: #1d3557;
+  font-size: 13px;
+}
+.dsh-video-link-head strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dsh-video-link-close {
+  flex: 0 0 auto;
+  border: 0;
+  background: transparent;
+  color: #6b7280;
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+}
+.dsh-video-link-player {
+  width: 100%;
+  max-height: calc(min(620px, 90vh) - 58px);
+  background: #111827;
+  object-fit: contain;
+}
+.dsh-video-link-status {
+  margin: 0;
+  padding: 14px;
+  color: #6b7280;
+  font-size: 12px;
+  text-align: center;
+}

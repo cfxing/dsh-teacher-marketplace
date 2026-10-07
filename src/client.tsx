@@ -20,6 +20,16 @@ type View = 'market' | 'mine' | 'artifacts'
 
 const TEACHERS: readonly Teacher[] = [
   {
+    id: 'general',
+    presetId: 'ai-teacher',
+    icon: '知',
+    name: 'AI学习老师',
+    subject: '综合',
+    description: '初高中综合学习导师，帮助理解概念、练习、纠错并迁移到新问题。',
+    tags: ['初高中', '多学科', '错题分析', '举一反三'],
+    highlights: ['直觉 → 概念 → 练习 → 变式 → 迁移', '覆盖数学、物理、化学、生物等中学学科', '根据学习需要选择题库、交互和学习动画'],
+  },
+  {
     id: 'math',
     presetId: 'ai-math-teacher',
     icon: '∑',
@@ -55,6 +65,7 @@ export function apply(ctx: Context): void {
 
   const ui = ctx as any
   const artifactManager = new ArtifactManager(ctx)
+  const disposeVideoLinkPreview = installVideoLinkPreview(() => artifactManager.snapshot().artifacts)
   let dispose: (() => void) | undefined
 
   const open = (initialView: View = 'market'): void => {
@@ -101,6 +112,7 @@ export function apply(ctx: Context): void {
       dispose?.()
       dispose = undefined
       artifactManager.dispose()
+      disposeVideoLinkPreview()
     },
     'dsh-teacher-marketplace: workspace lifecycle',
   )
@@ -148,6 +160,179 @@ function installStyles(): void {
   tag.dataset.plugin = id
   tag.textContent = clientCss
   document.head.appendChild(tag)
+}
+
+/**
+ * 聊天消息中的工作区视频链接默认会被宿主当作普通文件导航。
+ * 在捕获阶段接管 .mp4 链接，用宿主 /api/file 读取后放进独立小窗播放。
+ * 只匹配视频扩展名，不影响其它附件和普通网页链接。
+ */
+function installVideoLinkPreview(getArtifacts: () => readonly Artifact[]): () => void {
+  const onClick = (event: MouseEvent): void => {
+    // 宿主的 Markdown 链接处理器可能先把事件标为 defaultPrevented；
+    // 只要目标是 mp4，仍然由本插件接管，避免继续导航到文件页。
+    if (event.button !== 0) return
+    const target = event.target
+    if (!(target instanceof Element)) return
+    const clickable = target.closest('a, button, [role="link"]')
+    if (!(clickable instanceof HTMLElement)) return
+    const reference = videoReferenceFromElement(clickable, getArtifacts())
+    if (reference === undefined) return
+
+    event.preventDefault()
+    event.stopPropagation()
+    event.stopImmediatePropagation()
+    openVideoLinkWindow(reference, videoFileNameFromElement(clickable) ?? '学习视频')
+  }
+
+  // window 捕获阶段早于宿主 document/React 的点击处理，才能真正阻止文件页跳转。
+  window.addEventListener('click', onClick, true)
+  return () => window.removeEventListener('click', onClick, true)
+}
+
+function videoFileNameFromElement(element: HTMLElement): string | undefined {
+  const text = element.textContent?.trim() ?? ''
+  const match = text.match(/[^/\\\s]+\.mp4/i)
+  return match?.[0]?.replace(/\\([_()[\]])/g, '$1')
+}
+
+function videoReferenceFromElement(element: HTMLElement, artifacts: readonly Artifact[]): string | undefined {
+  const attributes = ['href', 'title', 'data-path', 'data-file-path', 'data-url', 'data-href']
+  for (const name of attributes) {
+    const value = element.getAttribute(name)?.trim()
+    const reference = value === undefined ? undefined : normalizeVideoReference(value)
+    if (reference !== undefined) return reference
+  }
+
+  // Harness 的文件卡片可能是 button/role=link，DOM 上只有文件名，没有 href。
+  // 此时用会话事件里已经抽取到的真实路径反查，仍可打开同一个视频。
+  const filename = videoFileNameFromElement(element)?.toLowerCase()
+  if (filename === undefined) return undefined
+  const artifact = [...artifacts].reverse().find(item => (
+    item.kind === 'video'
+    && (item.title.toLowerCase().replace(/\\([_()[\]])/g, '$1') === filename
+      || item.path?.toLowerCase().endsWith(`/${filename}`) === true
+      || item.url?.toLowerCase().split(/[?#]/, 1)[0]?.endsWith(`/${filename}`) === true)
+  ))
+  return artifact?.path ?? artifact?.url
+}
+
+/** 把宿主的 /video?path=相对路径&cwd=工作区 URL 转成可读的绝对工作区路径。 */
+function normalizeVideoReference(value: string): string | undefined {
+  const clean = (input: string): string => input.trim().replace(/\\([_()[\]])/g, '$1')
+  try {
+    const parsed = new URL(value, document.baseURI)
+    const pathParam = parsed.searchParams.get('path')
+    if (pathParam !== null && /(?:^|\/)video$/i.test(parsed.pathname)) {
+      const path = clean(pathParam)
+      if (!/\.mp4(?:[?#].*)?$/i.test(path)) return undefined
+      const cwd = clean(parsed.searchParams.get('cwd') ?? '')
+      if (path.startsWith('/')) return path
+      return cwd === '' ? path : `${cwd.replace(/\/$/, '')}/${path.replace(/^\/+/, '')}`
+    }
+
+    const apiPath = parsed.searchParams.get('path')
+    if (apiPath !== null && /(?:^|\/)file$/i.test(parsed.pathname)) {
+      const path = clean(apiPath)
+      return /\.mp4(?:[?#].*)?$/i.test(path) ? path : undefined
+    }
+
+    const decoded = clean(decodeURIComponent(value))
+    // 相对文件名交给会话产物路径反查，不能直接拿去请求 /api/file。
+    return /^\//.test(decoded) && /\.mp4(?:[?#].*)?$/i.test(decoded) ? value : undefined
+  } catch {
+    const decoded = clean(value)
+    return /^\//.test(decoded) && /\.mp4(?:[?#].*)?$/i.test(decoded) ? value : undefined
+  }
+}
+
+function videoTitleFromReference(value: string): string {
+  try {
+    const normalized = normalizeVideoReference(value) ?? value
+    const tail = normalized.split(/[\\/]/).pop() ?? normalized
+    return decodeURIComponent(tail)
+  } catch {
+    return value
+  }
+}
+
+function videoSourceForReference(reference: string): string {
+  const value = reference.trim()
+  if (/^file:/i.test(value)) {
+    try {
+      const path = decodeURIComponent(new URL(value).pathname)
+      return `/api/file?path=${encodeURIComponent(path)}`
+    } catch {
+      return `/api/file?path=${encodeURIComponent(value.replace(/^file:\/\//i, ''))}`
+    }
+  }
+  if (/^(https?:|blob:|data:|\/api\/file\?)/i.test(value)) return value
+  return `/api/file?path=${encodeURIComponent(value)}`
+}
+
+function openVideoLinkWindow(reference: string, title: string): void {
+  document.querySelector('[data-dsh-video-link-window]')?.remove()
+
+  const backdrop = document.createElement('div')
+  backdrop.className = 'dsh-video-link-backdrop'
+  backdrop.dataset.dshVideoLinkWindow = 'true'
+
+  const panel = document.createElement('section')
+  panel.className = 'dsh-video-link-window'
+  panel.setAttribute('role', 'dialog')
+  panel.setAttribute('aria-modal', 'true')
+  panel.setAttribute('aria-label', title)
+
+  const head = document.createElement('header')
+  head.className = 'dsh-video-link-head'
+  const heading = document.createElement('strong')
+  heading.textContent = title
+  const close = document.createElement('button')
+  close.type = 'button'
+  close.className = 'dsh-video-link-close'
+  close.textContent = '×'
+  close.setAttribute('aria-label', '关闭视频')
+  head.append(heading, close)
+
+  const video = document.createElement('video')
+  video.className = 'dsh-video-link-player'
+  video.controls = true
+  video.autoplay = true
+  video.playsInline = true
+  video.setAttribute('preload', 'metadata')
+
+  const status = document.createElement('p')
+  status.className = 'dsh-video-link-status'
+  status.textContent = '正在加载视频…'
+  panel.append(head, video, status)
+  backdrop.append(panel)
+  document.body.append(backdrop)
+
+  let objectUrl: string | undefined
+  const closeWindow = (): void => {
+    if (objectUrl !== undefined) URL.revokeObjectURL(objectUrl)
+    backdrop.remove()
+  }
+  close.addEventListener('click', closeWindow)
+  backdrop.addEventListener('click', event => {
+    if (event.target === backdrop) closeWindow()
+  })
+
+  const source = videoSourceForReference(reference)
+  void fetch(source)
+    .then(response => {
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      return response.blob()
+    })
+    .then(blob => {
+      objectUrl = URL.createObjectURL(blob)
+      video.src = objectUrl
+      status.remove()
+      void video.play().catch(() => undefined)
+    })
+    .catch(() => {
+      status.textContent = '视频暂时无法读取，请确认文件已生成后重试。'
+    })
 }
 
 function readSaved(): string[] {
@@ -484,10 +669,17 @@ function isUrlLike(value: string): boolean {
 function markdownRefsFrom(text: string): Array<{ alt: string; url: string }> {
   // 生成器既会输出 [视频](<绝对路径>)，也会输出 [视频](绝对路径)。
   // 后者不能只按“图片语法”解析，否则 tool/call 已生成的视频不会进入产物列表。
-  return Array.from(text.matchAll(/!?\[([^\]]*?)\]\(\s*(?:<([^<>]+)>|([^)]*?))\s*\)/g)).map(m => ({
-    alt: m[1] ?? '',
-    url: (m[2] ?? m[3] ?? '').trim(),
+  return Array.from(text.matchAll(/!?\[([^\]]*?)\]\\?\(\s*(?:<([^<>]+)>|([^)]*?))\\?\)/g)).map(m => ({
+    alt: (m[1] ?? '').replace(/\\([_()[\]])/g, '$1'),
+    url: (m[2] ?? m[3] ?? '').trim().replace(/\\([_()[\]])/g, '$1'),
   }))
+}
+
+/** 提取工具结果普通文本中的工作区绝对路径，例如 "Rendered ... to /home/...mp4"。 */
+function workspaceFileRefsFrom(text: string): string[] {
+  return Array.from(text.matchAll(/\/[^\s<>"'`]+?\.(?:html?|mp4|webm|mov|m4v|png|jpe?g|gif|webp|svg|pdf)(?=$|[\s)\]},;:])/gi))
+    .map(match => (match[0] ?? '').replace(/\\([_()[\]])/g, '$1'))
+    .filter(Boolean)
 }
 
 /** 从一个"可能的产物对象"里收集 id/文件名/路径。值精确对应 file/image 内容块。 */
@@ -540,12 +732,24 @@ function collectFromEvent(event: unknown, out: Artifact[]): void {
       // 教师常用它把生成的视频/图片贴进 assistant 消息文本里。
       for (const ref of markdownRefsFrom(value)) {
         const refUrl = ref.url
-        const tail = fileNameTail(refUrl)
-        if (tail !== undefined && isUrlLike(refUrl)) {
-          pushArtifact(out, { kind: kindOfName(tail), title: ref.alt !== '' ? ref.alt : decodeURIComponent(tail), url: refUrl })
-        } else if (tail !== undefined) {
-          // 宿主工作区绝对路径（非 http/blob）：不可内联，仅记录 path 供跳转。
-          pushArtifact(out, { kind: kindOfName(tail), title: ref.alt !== '' ? ref.alt : decodeURIComponent(tail), path: refUrl })
+        const resolvedRef = normalizeVideoReference(refUrl)
+        const tail = resolvedRef === undefined ? fileNameTail(refUrl) : videoTitleFromReference(resolvedRef)
+        if (tail !== undefined && resolvedRef !== undefined && isUrlLike(resolvedRef)) {
+          pushArtifact(out, { kind: kindOfName(tail), title: ref.alt !== '' ? ref.alt : tail, url: resolvedRef })
+        } else if (tail !== undefined && (resolvedRef !== undefined || fileNameTail(refUrl) !== undefined)) {
+          // 宿主 /video URL 会在这里被还原为 cwd + path 绝对路径，供 /api/file 内联读取。
+          const path = resolvedRef ?? refUrl
+          pushArtifact(out, { kind: kindOfName(tail), title: ref.alt !== '' ? ref.alt : tail, path })
+        }
+      }
+
+      // render_math_code 的真实结果是普通文本：
+      // "Rendered custom scene to /home/.../ComplexEquationScene_narrated.mp4"。
+      // 它既不是附件块也不是 JSON，必须从这条白名单文本中单独提取。
+      for (const path of workspaceFileRefsFrom(value)) {
+        const tail = fileNameTail(path)
+        if (tail !== undefined) {
+          pushArtifact(out, { kind: kindOfName(tail), title: decodeURIComponent(tail), path })
         }
       }
 
@@ -861,7 +1065,9 @@ function TeacherMarketplace({ ctx, artifactManager, initialView, close }: {
         </section>
         <section className="dsh-artifacts-preview">
           {active === null ? (
-            <ArtifactDebugPanel debug={artifactSnapshot.debug} sessionId={artifactSnapshot.sessionId} />
+            <div className="dsh-artifacts-empty">
+              <span>生成学习视频、图片或文档后，可在这里直接预览。</span>
+            </div>
           ) : (
             <ArtifactPreview
               artifact={active}
@@ -999,29 +1205,6 @@ function kindGlyph(kind: ArtifactKind): string {
     default: return '〙'
   }
 }
-
-function ArtifactDebugPanel({ debug, sessionId }: { debug: ArtifactDebug; sessionId: string | null }): React.ReactElement {
-  return (
-    <div style={{ padding: 24, overflow: 'auto', height: '100%', fontFamily: 'monospace', fontSize: 12 }}>
-      <h2 style={{ fontFamily: 'inherit' }}>产物调试信息</h2>
-      <div>Session ID: {sessionId ?? '无'}</div>
-      <div>eventSource: {debug.sourceConnected ? '已连接' : '未连接'}</div>
-      <div>entries: {debug.entryCount}</div>
-      <div>events: {debug.eventCount}</div>
-      <div>event types: {debug.eventTypes.join(', ') || '无'}</div>
-      {debug.error && <pre>读取事件失败：{debug.error}</pre>}
-      <h3>最近 8 个事件（每个最多 1200 字符）</h3>
-      {debug.lastEvents.length === 0 ? (
-        <div>暂无事件。请先开始学习并让老师生成一次 HTML。</div>
-      ) : (
-        debug.lastEvents.map((item, index) => (
-          <pre key={index} style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', marginBottom: 12 }}>{item}</pre>
-        ))
-      )}
-    </div>
-  )
-}
-
 
 function ArtifactPreview({ artifact, session, onOpenInSession }: {
   artifact: Artifact

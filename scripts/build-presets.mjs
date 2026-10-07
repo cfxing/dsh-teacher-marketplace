@@ -7,7 +7,7 @@ const presetsDir = resolve(root, 'src/presets')
 
 // 插件本体与「基础能力」注释是固定的宿主级装配，不随 Preset 增删变化，
 // 单独维护在这里，避免每次合并时重复手写。
-const header = `# 教师智能体市场：页面插件 + 两个教育类 Agent Preset。
+const header = `# 教师智能体市场：页面插件 + 教育类 Agent Preset。
 # 注意：本文件由 scripts/build-presets.mjs 从 src/presets/*.yml 自动生成，请勿手改。
 #
 # 基础能力（由 web profile 宿主层统一加载，Preset 不重复挂载以避免 eager mount 重复实例化）：
